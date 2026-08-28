@@ -1,4 +1,3 @@
--- PASO 3: Verificar conteos
 SELECT 'departments' AS tabla, COUNT(*) AS total FROM "100_test".departments
 UNION ALL SELECT 'sectors', COUNT(*) FROM "100_test".sectors
 UNION ALL SELECT 'users', COUNT(*) FROM "100_test".users

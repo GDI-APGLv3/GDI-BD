@@ -1,25 +1,15 @@
-"""
-check_migrations.py — Verifica estado de migraciones vs BD.
 
-Compara los archivos .sql en sql/migrations/ (excluyendo archive/)
-contra la tabla public.schema_migrations en la BD.
-
-Uso:
-    DATABASE_URL=postgresql://... python tools/check_migrations.py
-"""
-
+import hashlib
 import os
 import re
 import sys
 import psycopg2
 
-# Ruta base del repo (relativa a este script)
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MIGRATIONS_DIR = os.path.join(REPO_ROOT, "sql", "migrations")
 
 
 def get_pending_files():
-    """Lista archivos .sql en migrations/ (sin archive/)."""
     files = []
     for entry in os.listdir(MIGRATIONS_DIR):
         if entry.endswith(".sql") and os.path.isfile(os.path.join(MIGRATIONS_DIR, entry)):
@@ -28,7 +18,6 @@ def get_pending_files():
 
 
 def extract_version(filename):
-    """Extrae version del nombre de archivo. Ej: 057_algo.sql -> '057'."""
     match = re.match(r"^(\d+[a-z]?)_", filename)
     if match:
         return match.group(1)
@@ -36,10 +25,14 @@ def extract_version(filename):
 
 
 def get_applied_versions(conn):
-    """Obtiene versiones ya aplicadas desde schema_migrations."""
     with conn.cursor() as cur:
-        cur.execute("SELECT version FROM public.schema_migrations ORDER BY version;")
-        return {row[0] for row in cur.fetchall()}
+        cur.execute("SELECT version, checksum FROM public.schema_migrations ORDER BY version;")
+        return {row[0]: row[1] for row in cur.fetchall()}
+
+
+def _checksum(path):
+    with open(path, "r", encoding="utf-8") as fh:
+        return hashlib.sha256(fh.read().encode("utf-8")).hexdigest()
 
 
 def main():
@@ -75,24 +68,43 @@ def main():
     print("-" * 75)
 
     falta_aplicar = []
+    con_drift = []
     for filename in pending_files:
         version = extract_version(filename)
         if version is None:
             estado = "SKIP (sin version)"
-        elif version in applied:
-            estado = "OK (aplicada)"
-        else:
+        elif version not in applied:
             estado = "PENDIENTE"
             falta_aplicar.append(filename)
+        else:
+            checksum_guardado = applied[version]
+            if checksum_guardado is None:
+                estado = "OK (aplicada, sin checksum)"
+            else:
+                path = os.path.join(MIGRATIONS_DIR, filename)
+                if _checksum(path) == checksum_guardado:
+                    estado = "OK (aplicada)"
+                else:
+                    estado = "DRIFT (archivo cambio despues de aplicarse)"
+                    con_drift.append(filename)
         print(f"{version or '?':<10} {filename:<50} {estado}")
 
     print()
     if falta_aplicar:
-        print(f"PENDIENTES ({len(falta_aplicar)}):")
-        for f in falta_aplicar:
-            print(f"  python tools/migrate.py sql/migrations/{f}")
+        print(f"PENDIENTES ({len(falta_aplicar)}): {', '.join(falta_aplicar)}")
+        print("  Aplicar con el runner oficial (idempotente, aplica todas en orden):")
+        print("    python tools/run_migrations.py")
+    if con_drift:
+        print(f"DRIFT ({len(con_drift)}): el archivo difiere del checksum guardado en este ambiente:")
+        for f in con_drift:
+            print(f"  {f}")
+        print("  Revisar que el cambio sea intencional (y por que no se registro con otra version)")
+        print("  antes de continuar — puede ser una edicion post-aplicacion no propagada.")
+
+    if falta_aplicar or con_drift:
+        sys.exit(1)
     else:
-        print("Todas las migraciones estan aplicadas.")
+        print("Todas las migraciones estan aplicadas, sin drift.")
 
 
 if __name__ == "__main__":

@@ -1,15 +1,3 @@
-"""
-migrate.py — Aplica UNA migracion especifica y la registra en schema_migrations.
-
-Uso:
-    DATABASE_URL=postgresql://... python tools/migrate.py sql/migrations/057_algo.sql
-
-El script:
-1. Lee el archivo SQL indicado
-2. Ejecuta el SQL en la BD
-3. Registra la version en public.schema_migrations
-4. Aborta si la version ya esta registrada (idempotente)
-"""
 
 import os
 import re
@@ -17,9 +5,11 @@ import sys
 import hashlib
 import psycopg2
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from run_migrations import NO_TRANSACTION_MARKER, _partes  # noqa: E402
+
 
 def extract_version(filename):
-    """Extrae version del nombre de archivo. Ej: 057_algo.sql -> '057'."""
     basename = os.path.basename(filename)
     match = re.match(r"^(\d+[a-z]?)_", basename)
     if match:
@@ -28,7 +18,6 @@ def extract_version(filename):
 
 
 def extract_name(filename):
-    """Extrae nombre descriptivo. Ej: 057_crear_tabla_x.sql -> 'crear_tabla_x'."""
     basename = os.path.basename(filename).replace(".sql", "")
     match = re.match(r"^\d+[a-z]?_(.*)", basename)
     if match:
@@ -43,7 +32,6 @@ def main():
 
     sql_path = sys.argv[1]
 
-    # Resolver path relativo desde raiz del repo
     if not os.path.isabs(sql_path):
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         sql_path = os.path.join(repo_root, sql_path)
@@ -70,16 +58,17 @@ def main():
 
     checksum = hashlib.sha256(sql_content.encode()).hexdigest()[:16]
 
+    sin_transaccion = NO_TRANSACTION_MARKER in sql_content
+
     try:
         conn = psycopg2.connect(database_url)
-        conn.autocommit = False
+        conn.autocommit = sin_transaccion
     except Exception as e:
         print(f"ERROR conectando a la BD: {e}")
         sys.exit(1)
 
     try:
         with conn.cursor() as cur:
-            # Verificar si ya esta aplicada
             cur.execute(
                 "SELECT applied_at FROM public.schema_migrations WHERE version = %s",
                 (version,)
@@ -90,22 +79,28 @@ def main():
                 conn.close()
                 sys.exit(0)
 
-            # Ejecutar el SQL
             print(f"Aplicando migracion {version} ({name})...")
-            cur.execute(sql_content)
+            if sin_transaccion:
+                print("  (sin transaccion: la migracion lo pide con @no-transaction)")
+            for parte in _partes(sql_content):
+                cur.execute(parte)
 
-            # Registrar en schema_migrations
             cur.execute(
                 """INSERT INTO public.schema_migrations (version, name, checksum)
-                   VALUES (%s, %s, %s)""",
+                   VALUES (%s, %s, %s)
+                   ON CONFLICT (version) DO UPDATE SET checksum = EXCLUDED.checksum""",
                 (version, name, checksum)
             )
 
-        conn.commit()
+        if not sin_transaccion:
+            conn.commit()
         print(f"OK: Migracion {version} aplicada y registrada.")
 
     except Exception as e:
-        conn.rollback()
+        if not sin_transaccion:
+            conn.rollback()
+        else:
+            print("AVISO: la migracion corrio SIN transaccion; lo ya aplicado NO se revierte.")
         print(f"ERROR aplicando migracion: {e}")
         conn.close()
         sys.exit(1)

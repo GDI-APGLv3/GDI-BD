@@ -1,4 +1,3 @@
--- Tabla de control de migraciones. Correr UNA VEZ en cada BD nueva.
 CREATE TABLE IF NOT EXISTS public.schema_migrations (
     version      TEXT PRIMARY KEY,
     name         TEXT NOT NULL,
@@ -7,7 +6,6 @@ CREATE TABLE IF NOT EXISTS public.schema_migrations (
     checksum     TEXT
 );
 
--- Historial de migraciones ya aplicadas (024-056)
 INSERT INTO public.schema_migrations (version, name, applied_at) VALUES
 ('024', 'initial_archive_batch', '2026-04-21 00:00:00+00'),
 ('025', 'initial_archive_batch', '2026-04-21 00:00:00+00'),

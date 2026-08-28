@@ -188,7 +188,7 @@ Cada municipio usa 4 configuraciones de bucket en `settings` (crear los buckets 
 - `gdi-{acronym}-oficial` - Documentos oficiales firmados
 - `gdi-{acronym}-tosign` - Documentos pendientes de firma
 - `bucket_edicion` - Imagenes de documentos en edicion (por defecto reutiliza el bucket tosign, prefijo `images/`)
-- `gdi-{acronym}-publico` - PDFs de tipos de documento publicos (opcional, NULL = feature desactivada)
+- `gdi-{acronym}-publico` - PDFs de tipos de documento publicos (GDI-098; opcional, NULL = feature desactivada)
 
 ## Variables de Entorno
 
@@ -204,6 +204,43 @@ DATABASE_URL=postgresql://user:pass@host:port/railway
 | `POSTGRES_PASSWORD` | `fly secrets` | Password de postgres |
 | `POSTGRES_DB` | `fly.toml [env]` | `railway` |
 | `PGDATA` | `fly.toml [env]` | `/var/lib/postgresql/data/pgdata` |
+
+## API Keys
+
+Ninguna API key se escribe en este repositorio: los scripts traen solo el hash
+SHA-256, que es lo unico que la base necesita para validarlas. Cada instalacion
+genera las suyas.
+
+### Key del agente de IA (GDI-AgenteLANG)
+
+Es determinista: se deriva del nombre del schema y de un secret propio de la
+instalacion, de modo que se puede regenerar sin haberla guardado.
+
+```bash
+export GDI_AGENT_KEY_SECRET='<secret-de-esta-instalacion>'
+python tools/gen_agent_api_key.py 100_test
+```
+
+Imprime la key en claro (se entrega al agente y no se guarda), su hash y su
+prefijo. El hash es el que va en `public.api_keys`.
+
+En `sql/04-seed-demo.sql` ese campo viene como `<YOUR_API_KEY_HASH_SHA256>`: el
+seed crea la fila pero deja la key inutilizable hasta que se genere la propia.
+Es deliberado, para que ninguna instalacion arranque con una credencial que
+otro pueda conocer.
+
+### Key del usuario de testing
+
+Es aleatoria, asi que **no se puede regenerar**: se guarda en un gestor de
+secretos al crearla.
+
+```bash
+python tools/gen_test_api_key.py dev
+```
+
+Los tres valores que imprime son los que pide el bloque `DECLARE` de
+`sql/99-create-testing-user.sql`, donde figuran como `<YOUR_API_KEY_PLAIN>`,
+`<YOUR_API_KEY_HASH_SHA256>` y `<YOUR_API_KEY_PREFIX>`.
 
 ## Tecnologia
 

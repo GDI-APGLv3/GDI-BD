@@ -1,56 +1,20 @@
--- ============================================================================
--- GDI LATAM - SEED DEMO (100_test)
--- ============================================================================
--- Descripcion: Crea tenant 100_test completo con datos demo
--- Version: 5.0.0
--- PostgreSQL: 17.0+ con pgvector
---
--- USO: Ejecutar DESPUES de 01-schema-public.sql y 02-seed-global.sql
---      Este archivo es AUTONOMO - no necesita 03-template-municipio.sql
---      Camino dev/test: 01-schema-public.sql → 02-seed-global.sql → 04-seed-demo.sql
---
--- CONTENIDO:
---   Seccion 1: Schema 100_test (33 tablas + indices + trigger sync)
---   Seccion 2: Schema 100_test_audit (audit_log + fn_log_change + 7 triggers)
---   Seccion 3: Datos iniciales (settings + estado_users + municipio)
---   Seccion 4: Datos demo (depts, sectors, ranks, users, doc types, etc.)
---   Seccion 5: Drafts de bienvenida (5 documentos borrador)
--- ============================================================================
 
--- ============================================================================
--- SECCION 1: SCHEMA 100_test (33 tablas + indices + trigger sync)
--- ============================================================================
 
--- !! ADVERTENCIA: Las dos lineas siguientes destruyen TODOS los datos de 100_test !!
--- Este archivo es EXCLUSIVO para el schema de DEV/TEST "100_test".
--- NUNCA ejecutar contra una BD de PRD (DEMO/ARG/ARIES).
--- Solo ejecutar cuando se quiere un redeploy limpio del entorno de desarrollo.
 DROP SCHEMA IF EXISTS "100_test" CASCADE;
 
--- Crear schema
 CREATE SCHEMA "100_test";
 
--- NOTA: Los ENUMs estan en schema public (compartidos por todos los municipios):
---   - public.document_status
---   - public.document_signer_status
---   - public.movement_type
---   - public.status_case
---   - public.case_creation_channel
 
--- ============================================================================
--- GRUPO A: ESTRUCTURA ORGANIZACIONAL
--- ============================================================================
-
--- TABLA 1: departments
 CREATE TABLE "100_test"."departments" (
   "id" UUID NOT NULL DEFAULT gen_random_uuid(),
   "name" VARCHAR(100) NOT NULL,
   "acronym" VARCHAR(20),
   "parent_id" UUID,
-  "rank_id" UUID,  -- FK a 100_test.ranks (per-tenant)
+  "rank_id" UUID,
   "head_user_id" UUID,
   "primary_color" VARCHAR(7),
   "is_active" BOOLEAN NOT NULL DEFAULT true,
+  "is_system" BOOLEAN NOT NULL DEFAULT false,
   "start_date" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   "end_date" TIMESTAMPTZ,
   "created_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -58,7 +22,6 @@ CREATE TABLE "100_test"."departments" (
   CONSTRAINT "departments_parent_fkey" FOREIGN KEY ("parent_id") REFERENCES "100_test"."departments" ("id")
 );
 
--- TABLA 2: sectors
 CREATE TABLE "100_test"."sectors" (
   "id" UUID NOT NULL DEFAULT gen_random_uuid(),
   "department_id" UUID NOT NULL,
@@ -73,35 +36,30 @@ CREATE TABLE "100_test"."sectors" (
   CONSTRAINT "sectors_acronym_unique" UNIQUE ("department_id", "acronym")
 );
 
--- ============================================================================
--- GRUPO B: USUARIOS
--- ============================================================================
 
--- TABLA 3: users
 CREATE TABLE "100_test"."users" (
   "id" UUID NOT NULL DEFAULT gen_random_uuid(),
-  "auth_id" TEXT,  -- ID de Auth0
-  "auth_method" VARCHAR(20) NOT NULL DEFAULT 'social',  -- 'social' o 'database'
+  "auth_id" TEXT,
+  "auth_method" VARCHAR(20) NOT NULL DEFAULT 'social',
   "email" TEXT NOT NULL,
   "full_name" VARCHAR(150) NOT NULL,
-  "profile_picture_url" TEXT,  -- URL de foto de perfil (Auth0)
+  "profile_picture_url" TEXT,
   "CountryID" VARCHAR(20),
   "sector_id" UUID,
   "estado" INT NOT NULL DEFAULT 1,
   "last_access" TIMESTAMPTZ,
-  "can_global_search_documents" BOOLEAN NOT NULL DEFAULT true,
-  "can_global_search_cases" BOOLEAN NOT NULL DEFAULT true,
+  "can_global_search_documents" BOOLEAN NOT NULL DEFAULT false,
+  "can_global_search_cases" BOOLEAN NOT NULL DEFAULT false,
   "created_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT "users_pkey" PRIMARY KEY ("id"),
   CONSTRAINT "users_email_unique" UNIQUE ("email"),
   CONSTRAINT "users_sector_fkey" FOREIGN KEY ("sector_id") REFERENCES "100_test"."sectors" ("id")
 );
 
--- TABLA 4: user_roles
 CREATE TABLE "100_test"."user_roles" (
   "id" UUID NOT NULL DEFAULT gen_random_uuid(),
   "user_id" UUID NOT NULL,
-  "role_id" UUID NOT NULL,  -- FK a public.roles
+  "role_id" UUID NOT NULL,
   "created_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT "user_roles_pkey" PRIMARY KEY ("id"),
   CONSTRAINT "user_roles_user_fkey" FOREIGN KEY ("user_id") REFERENCES "100_test"."users" ("id"),
@@ -109,18 +67,16 @@ CREATE TABLE "100_test"."user_roles" (
   CONSTRAINT "user_roles_unique" UNIQUE ("user_id", "role_id")
 );
 
--- TABLA 5: user_seals (1 sello por usuario)
 CREATE TABLE "100_test"."user_seals" (
   "id" UUID NOT NULL DEFAULT gen_random_uuid(),
   "user_id" UUID NOT NULL,
-  "city_seal_id" INT NOT NULL,  -- FK a city_seals local
+  "city_seal_id" INT NOT NULL,
   "created_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT "user_seals_pkey" PRIMARY KEY ("id"),
   CONSTRAINT "user_seals_user_fkey" FOREIGN KEY ("user_id") REFERENCES "100_test"."users" ("id"),
   CONSTRAINT "user_seals_user_unique" UNIQUE ("user_id")
 );
 
--- TABLA 6: user_sector_permissions
 CREATE TABLE "100_test"."user_sector_permissions" (
   "id" UUID NOT NULL DEFAULT gen_random_uuid(),
   "user_id" UUID NOT NULL,
@@ -134,26 +90,18 @@ CREATE TABLE "100_test"."user_sector_permissions" (
   CONSTRAINT "user_sector_permissions_unique" UNIQUE ("user_id", "sector_id")
 );
 
--- TABLA 7: estado_users
 CREATE TABLE "100_test"."estado_users" (
   "id" SERIAL NOT NULL,
   "estado" VARCHAR(50) NOT NULL,
   CONSTRAINT "estado_users_pkey" PRIMARY KEY ("id")
 );
 
--- ============================================================================
--- GRUPO C: RANGOS Y SELLOS (per-tenant)
--- ============================================================================
--- Cada municipio define sus propios rangos jerarquicos y sellos.
--- Los sellos pueden estar vinculados a un rango (ej: "Secretario") o ser genericos (ej: "Innovador").
--- El campo `level` en ranks determina la jerarquia (1 = mas alto).
 
--- TABLA 8: ranks (jerarquias del municipio)
 CREATE TABLE "100_test"."ranks" (
   "id" UUID NOT NULL DEFAULT gen_random_uuid(),
   "name" VARCHAR(50) NOT NULL,
-  "level" INT NOT NULL,  -- 1 = Intendente (mas alto), 2 = Secretario, 3 = Director...
-  "head_signature" VARCHAR(100),  -- Texto que aparece en firma de documentos
+  "level" INT NOT NULL,
+  "head_signature" VARCHAR(100),
   "created_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT "ranks_pkey" PRIMARY KEY ("id"),
   CONSTRAINT "ranks_name_unique" UNIQUE ("name"),
@@ -163,12 +111,11 @@ CREATE TABLE "100_test"."ranks" (
 COMMENT ON TABLE "100_test"."ranks" IS 'Jerarquias del municipio (per-tenant)';
 COMMENT ON COLUMN "100_test"."ranks"."level" IS '1 = mas alto (Intendente), numeros mayores = menor jerarquia';
 
--- TABLA 9: city_seals (sellos del municipio)
 CREATE TABLE "100_test"."city_seals" (
   "id" SERIAL NOT NULL,
   "name" TEXT NOT NULL,
   "description" TEXT,
-  "rank_id" UUID,  -- NULL = sello generico (cualquier usuario), NOT NULL = sello con rango
+  "rank_id" UUID,
   "created_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT "city_seals_pkey" PRIMARY KEY ("id"),
   CONSTRAINT "city_seals_name_unique" UNIQUE ("name"),
@@ -178,20 +125,15 @@ CREATE TABLE "100_test"."city_seals" (
 COMMENT ON TABLE "100_test"."city_seals" IS 'Sellos del municipio. rank_id NULL = generico';
 COMMENT ON COLUMN "100_test"."city_seals"."rank_id" IS 'Si NOT NULL, el usuario con este sello tiene ese rango jerarquico';
 
--- FKs diferidas: tablas que se crean antes de sus dependencias
 ALTER TABLE "100_test"."departments"
   ADD CONSTRAINT "departments_rank_fkey" FOREIGN KEY ("rank_id") REFERENCES "100_test"."ranks" ("id");
 ALTER TABLE "100_test"."user_seals"
   ADD CONSTRAINT "user_seals_seal_fkey" FOREIGN KEY ("city_seal_id") REFERENCES "100_test"."city_seals" ("id");
 
--- ============================================================================
--- GRUPO D: DOCUMENTOS
--- ============================================================================
 
--- TABLA 10: document_types
 CREATE TABLE "100_test"."document_types" (
   "id" SERIAL NOT NULL,
-  "global_document_type_id" UUID NOT NULL,  -- FK a public.global_document_types
+  "global_document_type_id" UUID,
   "name" VARCHAR(100) NOT NULL,
   "acronym" VARCHAR(6) NOT NULL,
   "description" TEXT,
@@ -200,16 +142,18 @@ CREATE TABLE "100_test"."document_types" (
   "type" "public"."document_type_source" NOT NULL DEFAULT 'HTML',
   "trust" BOOLEAN NOT NULL DEFAULT true,
   "special_numbering" BOOLEAN NOT NULL DEFAULT false,
+  "accepts_embedded_files" BOOLEAN NOT NULL DEFAULT false,
+  "visibility" VARCHAR(10) NOT NULL DEFAULT 'interno',
+  "is_reserved" BOOLEAN GENERATED ALWAYS AS (visibility = 'reservado') STORED,
+  "external_signable" BOOLEAN NOT NULL DEFAULT false,
   "created_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT "document_types_pkey" PRIMARY KEY ("id"),
   CONSTRAINT "document_types_acronym_unique" UNIQUE ("acronym"),
   CONSTRAINT "document_types_signature_policy_chk" CHECK (signature_policy IN ('electronic','digital_all','digital_num')),
+  CONSTRAINT "document_types_visibility_chk" CHECK (visibility IN ('interno','reservado','publico')),
   CONSTRAINT "document_types_global_fkey" FOREIGN KEY ("global_document_type_id") REFERENCES "public"."global_document_types" ("id")
 );
 
--- TABLA 11: document_types_allowed_by_rank
--- Define que rango minimo se necesita para numerar un tipo de documento.
--- Si un doc_type tiene rank "Director" (level=3), cualquier usuario con level <= 3 puede numerar.
 CREATE TABLE "100_test"."document_types_allowed_by_rank" (
   "id" SERIAL NOT NULL,
   "document_type_id" INT NOT NULL,
@@ -221,7 +165,6 @@ CREATE TABLE "100_test"."document_types_allowed_by_rank" (
   CONSTRAINT "dtabr_unique" UNIQUE ("document_type_id", "rank_id")
 );
 
--- TABLA 12: enabled_document_types_by_sector
 CREATE TABLE "100_test"."enabled_document_types_by_sector" (
   "id" SERIAL NOT NULL,
   "document_type_id" INT NOT NULL,
@@ -233,10 +176,25 @@ CREATE TABLE "100_test"."enabled_document_types_by_sector" (
   CONSTRAINT "enabled_edts_unique" UNIQUE ("document_type_id", "sector_id")
 );
 
--- TABLA 13: document_draft
+CREATE TABLE "100_test"."citizens" (
+  "id" UUID NOT NULL DEFAULT gen_random_uuid(),
+  "full_name" VARCHAR(255) NOT NULL,
+  "country_id" VARCHAR(20) NOT NULL,
+  "estado" VARCHAR(10) NOT NULL DEFAULT 'pendiente',
+  "validated_at" TIMESTAMPTZ,
+  "validated_by" VARCHAR(50),
+  "created_via" VARCHAR(10),
+  "created_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT "citizens_pkey" PRIMARY KEY ("id"),
+  CONSTRAINT "citizens_country_id_unique" UNIQUE ("country_id"),
+  CONSTRAINT "citizens_estado_chk" CHECK ("estado" IN ('pendiente','validado','bloqueado')),
+  CONSTRAINT "citizens_created_via_chk" CHECK ("created_via" IN ('api','backoffice'))
+);
+
 CREATE TABLE "100_test"."document_draft" (
   "id" UUID NOT NULL DEFAULT gen_random_uuid(),
-  "created_by" UUID NOT NULL,
+  "created_by" UUID,
+  "created_by_citizen" UUID,
   "document_type_id" INT,
   "reference" VARCHAR(100) NOT NULL,
   "content" JSONB,
@@ -253,14 +211,16 @@ CREATE TABLE "100_test"."document_draft" (
   "created_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT "document_draft_pkey" PRIMARY KEY ("id"),
   CONSTRAINT "document_draft_created_by_fkey" FOREIGN KEY ("created_by") REFERENCES "100_test"."users" ("id"),
-  CONSTRAINT "document_draft_document_type_fkey" FOREIGN KEY ("document_type_id") REFERENCES "100_test"."document_types" ("id")
+  CONSTRAINT "document_draft_created_by_citizen_fkey" FOREIGN KEY ("created_by_citizen") REFERENCES "100_test"."citizens" ("id"),
+  CONSTRAINT "document_draft_document_type_fkey" FOREIGN KEY ("document_type_id") REFERENCES "100_test"."document_types" ("id"),
+  CONSTRAINT "document_draft_creator_chk" CHECK (num_nonnulls("created_by", "created_by_citizen") = 1)
 );
 
--- TABLA 14: document_signers
 CREATE TABLE "100_test"."document_signers" (
   "id" UUID NOT NULL DEFAULT gen_random_uuid(),
   "document_id" UUID NOT NULL,
-  "user_id" UUID NOT NULL,
+  "user_id" UUID,
+  "citizen_id" UUID,
   "is_numerator" BOOLEAN NOT NULL DEFAULT false,
   "signing_order" INT,
   "status" "public"."document_signer_status" NOT NULL DEFAULT 'pending',
@@ -268,10 +228,11 @@ CREATE TABLE "100_test"."document_signers" (
   "created_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT "document_signers_pkey" PRIMARY KEY ("id"),
   CONSTRAINT "document_signers_document_fkey" FOREIGN KEY ("document_id") REFERENCES "100_test"."document_draft" ("id"),
-  CONSTRAINT "document_signers_user_fkey" FOREIGN KEY ("user_id") REFERENCES "100_test"."users" ("id")
+  CONSTRAINT "document_signers_user_fkey" FOREIGN KEY ("user_id") REFERENCES "100_test"."users" ("id"),
+  CONSTRAINT "document_signers_citizen_fkey" FOREIGN KEY ("citizen_id") REFERENCES "100_test"."citizens" ("id"),
+  CONSTRAINT "document_signers_actor_chk" CHECK (num_nonnulls("user_id", "citizen_id") = 1)
 );
 
--- TABLA 15: document_rejections
 CREATE TABLE "100_test"."document_rejections" (
   "id" UUID NOT NULL DEFAULT gen_random_uuid(),
   "document_id" UUID NOT NULL,
@@ -283,7 +244,24 @@ CREATE TABLE "100_test"."document_rejections" (
   CONSTRAINT "document_rejections_user_fkey" FOREIGN KEY ("rejected_by") REFERENCES "100_test"."users" ("id")
 );
 
--- TABLA 16: official_documents
+CREATE TABLE "100_test"."document_draft_embedded_files" (
+  "id" UUID NOT NULL DEFAULT gen_random_uuid(),
+  "document_id" UUID NOT NULL,
+  "r2_key" TEXT NOT NULL,
+  "file_name" VARCHAR(255) NOT NULL,
+  "file_size" BIGINT NOT NULL,
+  "extension" VARCHAR(16) NOT NULL,
+  "created_by" UUID,
+  "created_by_citizen" UUID,
+  "created_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT "document_draft_embedded_files_pkey" PRIMARY KEY ("id"),
+  CONSTRAINT "ddef_document_fkey" FOREIGN KEY ("document_id") REFERENCES "100_test"."document_draft" ("id") ON DELETE CASCADE,
+  CONSTRAINT "ddef_created_by_fkey" FOREIGN KEY ("created_by") REFERENCES "100_test"."users" ("id"),
+  CONSTRAINT "ddef_created_by_citizen_fkey" FOREIGN KEY ("created_by_citizen") REFERENCES "100_test"."citizens" ("id"),
+  CONSTRAINT "ddef_creator_chk" CHECK (NOT ("created_by" IS NOT NULL AND "created_by_citizen" IS NOT NULL))
+);
+CREATE INDEX "idx_document_draft_embedded_files_document" ON "100_test"."document_draft_embedded_files" ("document_id");
+
 CREATE TABLE "100_test"."official_documents" (
   "id" UUID NOT NULL DEFAULT gen_random_uuid(),
   "document_type_id" INT NOT NULL,
@@ -292,11 +270,12 @@ CREATE TABLE "100_test"."official_documents" (
   "official_number" VARCHAR(50) NOT NULL,
   "year" SMALLINT NOT NULL,
   "department_id" UUID NOT NULL,
-  "numerator_id" UUID NOT NULL,
-  "signed_at" TIMESTAMPTZ,  -- nullable: NULL = numero reservado, NOT NULL = firmado y oficial
+  "numerator_id" UUID,
+  "numerator_citizen" UUID,
+  "signed_at" TIMESTAMPTZ,
   "signers" JSONB,
   "global_sequence" INT,
-  "signer_sector_ids" UUID[],  -- Array de sector_ids de todos los firmantes
+  "signer_sector_ids" UUID[],
   "resume" TEXT,
   "short_resume" TEXT,
   "special_number" INT NULL,
@@ -308,45 +287,64 @@ CREATE TABLE "100_test"."official_documents" (
   CONSTRAINT "official_documents_document_type_fkey" FOREIGN KEY ("document_type_id") REFERENCES "100_test"."document_types" ("id"),
   CONSTRAINT "official_documents_department_fkey" FOREIGN KEY ("department_id") REFERENCES "100_test"."departments" ("id"),
   CONSTRAINT "official_documents_numerator_fkey" FOREIGN KEY ("numerator_id") REFERENCES "100_test"."users" ("id"),
+  CONSTRAINT "official_documents_numerator_citizen_fkey" FOREIGN KEY ("numerator_citizen") REFERENCES "100_test"."citizens" ("id"),
+  CONSTRAINT "official_documents_numerator_chk" CHECK (num_nonnulls("numerator_id", "numerator_citizen") = 1),
   CONSTRAINT "official_documents_numbering_regime_check" CHECK (numbering_regime IN ('GLOBAL', 'SPECIAL')),
   CONSTRAINT "official_documents_reservation_status_check" CHECK (reservation_status IN ('RESERVED', 'CONFIRMED', 'CANCELLED'))
 );
 
--- TABLA 16b: document_number_counters (contador por tipo+año+departamento)
+CREATE TABLE "100_test"."official_document_embedded_files" (
+  "id" UUID NOT NULL DEFAULT gen_random_uuid(),
+  "official_document_id" UUID NOT NULL,
+  "file_name" VARCHAR(255) NOT NULL,
+  "file_size" BIGINT NOT NULL,
+  "extension" VARCHAR(16) NOT NULL,
+  "created_by" UUID,
+  "created_by_citizen" UUID,
+  "created_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT "official_document_embedded_files_pkey" PRIMARY KEY ("id"),
+  CONSTRAINT "odef_official_document_fkey" FOREIGN KEY ("official_document_id") REFERENCES "100_test"."official_documents" ("id") ON DELETE CASCADE,
+  CONSTRAINT "odef_created_by_fkey" FOREIGN KEY ("created_by") REFERENCES "100_test"."users" ("id"),
+  CONSTRAINT "odef_created_by_citizen_fkey" FOREIGN KEY ("created_by_citizen") REFERENCES "100_test"."citizens" ("id"),
+  CONSTRAINT "odef_creator_chk" CHECK (NOT ("created_by" IS NOT NULL AND "created_by_citizen" IS NOT NULL))
+);
+CREATE INDEX "idx_official_document_embedded_files_official" ON "100_test"."official_document_embedded_files" ("official_document_id");
+
 CREATE TABLE "100_test"."document_number_counters" (
   "document_type_id" INT NOT NULL,
   "year" SMALLINT NOT NULL,
   "department_id" UUID NOT NULL,
   "last_number" INT NOT NULL DEFAULT 0,
   "active_reservation_document_id" UUID NULL,
+  "active_reservation_batch_id" UUID NULL,
   "updated_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT "document_number_counters_pkey" PRIMARY KEY ("document_type_id", "year", "department_id"),
   CONSTRAINT "document_number_counters_doc_type_fkey" FOREIGN KEY ("document_type_id") REFERENCES "100_test"."document_types" ("id"),
   CONSTRAINT "document_number_counters_department_fkey" FOREIGN KEY ("department_id") REFERENCES "100_test"."departments" ("id")
 );
 
--- ============================================================================
--- GRUPO E: EXPEDIENTES
--- ============================================================================
 
--- TABLA 17: case_templates
 CREATE TABLE "100_test"."case_templates" (
   "id" UUID NOT NULL DEFAULT gen_random_uuid(),
-  "global_case_template_id" UUID NOT NULL,  -- FK a public.global_case_templates
+  "global_case_template_id" UUID,
   "type_name" VARCHAR(100) NOT NULL,
   "acronym" VARCHAR(6) NOT NULL,
   "description" TEXT,
   "creation_channel" "public"."case_creation_channel" NOT NULL DEFAULT 'web',
   "filing_department_id" UUID NOT NULL,
+  "filing_sector_id" UUID NOT NULL,
   "is_active" BOOLEAN NOT NULL DEFAULT true,
+  "visibility" VARCHAR(10) NOT NULL DEFAULT 'interno',
+  "is_reserved" BOOLEAN GENERATED ALWAYS AS (visibility = 'reservado') STORED,
   "created_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT "case_templates_pkey" PRIMARY KEY ("id"),
   CONSTRAINT "case_templates_acronym_unique" UNIQUE ("acronym"),
+  CONSTRAINT "case_templates_visibility_chk" CHECK (visibility IN ('interno','reservado')),
   CONSTRAINT "case_templates_global_fkey" FOREIGN KEY ("global_case_template_id") REFERENCES "public"."global_case_templates" ("id"),
-  CONSTRAINT "case_templates_department_fkey" FOREIGN KEY ("filing_department_id") REFERENCES "100_test"."departments" ("id")
+  CONSTRAINT "case_templates_department_fkey" FOREIGN KEY ("filing_department_id") REFERENCES "100_test"."departments" ("id"),
+  CONSTRAINT "case_templates_sector_fkey" FOREIGN KEY ("filing_sector_id") REFERENCES "100_test"."sectors" ("id")
 );
 
--- TABLA 18: case_template_allowed_departments
 CREATE TABLE "100_test"."case_template_allowed_departments" (
   "case_template_id" UUID NOT NULL,
   "department_id" UUID NOT NULL,
@@ -355,14 +353,14 @@ CREATE TABLE "100_test"."case_template_allowed_departments" (
   CONSTRAINT "ctad_department_fkey" FOREIGN KEY ("department_id") REFERENCES "100_test"."departments" ("id")
 );
 
--- TABLA 19: cases
 CREATE TABLE "100_test"."cases" (
   "id" UUID NOT NULL DEFAULT gen_random_uuid(),
   "case_number" VARCHAR(50) NOT NULL,
   "reference" VARCHAR(250) NOT NULL,
   "status" "public"."status_case" NOT NULL DEFAULT 'inactive',
   "case_template_id" UUID NOT NULL,
-  "created_by_user_id" UUID NOT NULL,
+  "created_by_user_id" UUID,
+  "created_by_citizen" UUID,
   "owner_department_id" UUID NOT NULL,
   "owner_sector_id" UUID,
   "created_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -373,21 +371,23 @@ CREATE TABLE "100_test"."cases" (
   CONSTRAINT "cases_number_unique" UNIQUE ("case_number"),
   CONSTRAINT "cases_template_fkey" FOREIGN KEY ("case_template_id") REFERENCES "100_test"."case_templates" ("id"),
   CONSTRAINT "cases_created_by_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "100_test"."users" ("id"),
+  CONSTRAINT "cases_created_by_citizen_fkey" FOREIGN KEY ("created_by_citizen") REFERENCES "100_test"."citizens" ("id"),
   CONSTRAINT "cases_department_fkey" FOREIGN KEY ("owner_department_id") REFERENCES "100_test"."departments" ("id"),
-  CONSTRAINT "cases_sector_fkey" FOREIGN KEY ("owner_sector_id") REFERENCES "100_test"."sectors" ("id")
+  CONSTRAINT "cases_sector_fkey" FOREIGN KEY ("owner_sector_id") REFERENCES "100_test"."sectors" ("id"),
+  CONSTRAINT "cases_creator_chk" CHECK (num_nonnulls("created_by_user_id", "created_by_citizen") = 1)
 );
 
--- TABLA 20: case_movements
 CREATE TABLE "100_test"."case_movements" (
   "id" UUID NOT NULL DEFAULT gen_random_uuid(),
   "case_id" UUID NOT NULL,
   "type" "public"."movement_type" NOT NULL,
   "user_id" UUID,
+  "citizen_id" UUID,
   "creator_sector_id" UUID NOT NULL,
   "admin_sector_id" UUID NOT NULL,
   "assigned_sector_id" UUID,
   "assigned_user_id" UUID,
-  "reason" VARCHAR(200) NOT NULL,
+  "reason" VARCHAR(1000) NOT NULL,
   "is_active" BOOLEAN NOT NULL DEFAULT true,
   "closed_at" TIMESTAMPTZ,
   "closing_reason" VARCHAR(200),
@@ -397,16 +397,18 @@ CREATE TABLE "100_test"."case_movements" (
   CONSTRAINT "case_movements_pkey" PRIMARY KEY ("id"),
   CONSTRAINT "case_movements_case_fkey" FOREIGN KEY ("case_id") REFERENCES "100_test"."cases" ("id"),
   CONSTRAINT "case_movements_user_fkey" FOREIGN KEY ("user_id") REFERENCES "100_test"."users" ("id"),
+  CONSTRAINT "case_movements_citizen_fkey" FOREIGN KEY ("citizen_id") REFERENCES "100_test"."citizens" ("id"),
   CONSTRAINT "case_movements_creator_sector_fkey" FOREIGN KEY ("creator_sector_id") REFERENCES "100_test"."sectors" ("id"),
-  CONSTRAINT "case_movements_admin_sector_fkey" FOREIGN KEY ("admin_sector_id") REFERENCES "100_test"."sectors" ("id")
+  CONSTRAINT "case_movements_admin_sector_fkey" FOREIGN KEY ("admin_sector_id") REFERENCES "100_test"."sectors" ("id"),
+  CONSTRAINT "case_movements_actor_chk" CHECK (NOT ("user_id" IS NOT NULL AND "citizen_id" IS NOT NULL))
 );
 
--- TABLA 21: case_official_documents
 CREATE TABLE "100_test"."case_official_documents" (
   "id" UUID NOT NULL DEFAULT gen_random_uuid(),
   "case_id" UUID NOT NULL,
   "official_document_id" UUID NOT NULL,
-  "linking_user_id" UUID NOT NULL,
+  "linking_user_id" UUID,
+  "linking_citizen" UUID,
   "order_number" INT NOT NULL,
   "linking_date" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   "is_active" BOOLEAN NOT NULL DEFAULT true,
@@ -415,28 +417,44 @@ CREATE TABLE "100_test"."case_official_documents" (
   CONSTRAINT "case_official_documents_pkey" PRIMARY KEY ("id"),
   CONSTRAINT "cod_case_fkey" FOREIGN KEY ("case_id") REFERENCES "100_test"."cases" ("id"),
   CONSTRAINT "cod_official_document_fkey" FOREIGN KEY ("official_document_id") REFERENCES "100_test"."official_documents" ("id"),
-  CONSTRAINT "cod_linking_user_fkey" FOREIGN KEY ("linking_user_id") REFERENCES "100_test"."users" ("id")
+  CONSTRAINT "cod_linking_user_fkey" FOREIGN KEY ("linking_user_id") REFERENCES "100_test"."users" ("id"),
+  CONSTRAINT "cod_linking_citizen_fkey" FOREIGN KEY ("linking_citizen") REFERENCES "100_test"."citizens" ("id"),
+  CONSTRAINT "cod_linking_actor_chk" CHECK (num_nonnulls("linking_user_id", "linking_citizen") = 1)
 );
 
--- TABLA 22: case_proposed_documents
 CREATE TABLE "100_test"."case_proposed_documents" (
   "id" UUID NOT NULL DEFAULT gen_random_uuid(),
   "case_id" UUID NOT NULL,
   "document_draft_id" UUID NOT NULL,
-  "proposing_user_id" UUID NOT NULL,
+  "proposing_user_id" UUID,
+  "proposing_citizen_id" UUID,
   "proposing_date" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   "is_active" BOOLEAN NOT NULL DEFAULT true,
   CONSTRAINT "case_proposed_documents_pkey" PRIMARY KEY ("id"),
   CONSTRAINT "cpd_case_fkey" FOREIGN KEY ("case_id") REFERENCES "100_test"."cases" ("id"),
   CONSTRAINT "cpd_document_draft_fkey" FOREIGN KEY ("document_draft_id") REFERENCES "100_test"."document_draft" ("id"),
-  CONSTRAINT "cpd_proposing_user_fkey" FOREIGN KEY ("proposing_user_id") REFERENCES "100_test"."users" ("id")
+  CONSTRAINT "cpd_proposing_user_fkey" FOREIGN KEY ("proposing_user_id") REFERENCES "100_test"."users" ("id"),
+  CONSTRAINT "cpd_proposing_citizen_fkey" FOREIGN KEY ("proposing_citizen_id") REFERENCES "100_test"."citizens" ("id"),
+  CONSTRAINT "cpd_proposing_actor_chk" CHECK (num_nonnulls("proposing_user_id", "proposing_citizen_id") = 1)
 );
 
--- ============================================================================
--- GRUPO J: RESPONSABLES Y FAVORITOS DE EXPEDIENTE
--- ============================================================================
+CREATE TABLE "100_test"."case_citizen_shares" (
+  "id"         UUID        NOT NULL DEFAULT gen_random_uuid(),
+  "case_id"    UUID        NOT NULL,
+  "citizen_id" UUID        NOT NULL,
+  "shared_by"  UUID,
+  "shared_at"  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  "removed_by" UUID,
+  "removed_at" TIMESTAMPTZ,
+  "is_active"  BOOLEAN     NOT NULL DEFAULT true,
+  CONSTRAINT "ccs_pkey"           PRIMARY KEY ("id"),
+  CONSTRAINT "ccs_case_fkey"      FOREIGN KEY ("case_id")    REFERENCES "100_test"."cases" ("id"),
+  CONSTRAINT "ccs_citizen_fkey"   FOREIGN KEY ("citizen_id") REFERENCES "100_test"."citizens" ("id"),
+  CONSTRAINT "ccs_shared_by_fkey"  FOREIGN KEY ("shared_by")  REFERENCES "100_test"."users" ("id"),
+  CONSTRAINT "ccs_removed_by_fkey" FOREIGN KEY ("removed_by") REFERENCES "100_test"."users" ("id")
+);
 
--- TABLA 34: case_responsibles (responsables asignados a expedientes)
+
 CREATE TABLE "100_test"."case_responsibles" (
   "id"         UUID        NOT NULL DEFAULT gen_random_uuid(),
   "case_id"    UUID        NOT NULL,
@@ -457,7 +475,6 @@ CREATE TABLE "100_test"."case_responsibles" (
 
 COMMENT ON TABLE "100_test"."case_responsibles" IS 'Responsables asignados a expedientes (ADMIN único activo + ADDITIONAL ilimitados)';
 
--- TABLA 35: case_favorites (expedientes marcados como favoritos por usuario)
 CREATE TABLE "100_test"."case_favorites" (
   "id"         UUID        NOT NULL DEFAULT gen_random_uuid(),
   "user_id"    UUID        NOT NULL,
@@ -471,16 +488,36 @@ CREATE TABLE "100_test"."case_favorites" (
 
 COMMENT ON TABLE "100_test"."case_favorites" IS 'Expedientes marcados como favoritos por cada usuario';
 
--- ============================================================================
--- GRUPO F: CONFIGURACION
--- ============================================================================
+CREATE TABLE "100_test"."case_user_views" (
+  "user_id"      UUID        NOT NULL,
+  "case_id"      UUID        NOT NULL,
+  "last_seen_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT "case_user_views_pkey"     PRIMARY KEY ("user_id", "case_id"),
+  CONSTRAINT "case_user_views_user_fkey" FOREIGN KEY ("user_id") REFERENCES "100_test"."users" ("id") ON DELETE CASCADE,
+  CONSTRAINT "case_user_views_case_fkey" FOREIGN KEY ("case_id") REFERENCES "100_test"."cases" ("id") ON DELETE CASCADE
+);
 
--- TABLA 23: settings
+COMMENT ON TABLE "100_test"."case_user_views" IS 'GDI-067: última vez que cada usuario abrió cada expediente (baseline de "movimientos nuevos")';
+
+CREATE TABLE "100_test"."notification_dismissals" (
+  "id"               UUID         NOT NULL DEFAULT gen_random_uuid(),
+  "user_id"          UUID         NOT NULL,
+  "notification_key" VARCHAR(160) NOT NULL,
+  "dismissed_at"     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  CONSTRAINT "notification_dismissals_pkey" PRIMARY KEY ("id"),
+  CONSTRAINT "notification_dismissals_user_fkey" FOREIGN KEY ("user_id") REFERENCES "100_test"."users" ("id") ON DELETE CASCADE,
+  CONSTRAINT "notification_dismissals_uq" UNIQUE ("user_id", "notification_key")
+);
+
+COMMENT ON TABLE "100_test"."notification_dismissals" IS 'GDI-067: dismiss manual (X) de avisos informativos (responsable/mención) por usuario';
+
+
 CREATE TABLE "100_test"."settings" (
   "id" UUID NOT NULL DEFAULT gen_random_uuid(),
   "timezone" TEXT NOT NULL DEFAULT 'America/Argentina/Buenos_Aires',
   "bucket_oficial" TEXT NOT NULL,
   "bucket_tosign" TEXT NOT NULL,
+  "bucket_publico" TEXT,
   "city" VARCHAR(100) DEFAULT 'LATAM',
   "address" VARCHAR(150),
   "contact_email" VARCHAR(100),
@@ -495,14 +532,7 @@ CREATE TABLE "100_test"."settings" (
   CONSTRAINT "settings_pkey" PRIMARY KEY ("id")
 );
 
--- ============================================================================
--- GRUPO G: AGENTE IA (GDI-Agente)
--- ============================================================================
--- Tabla de chunks con embeddings para búsqueda semántica (RAG)
--- NOTA: conversations, messages, pending_actions y tool_executions fueron
---       eliminadas. LangGraph usa su propio checkpointer en schema public.
 
--- TABLA 24: document_chunks (vectores para RAG)
 CREATE TABLE "100_test"."document_chunks" (
   "id" UUID NOT NULL DEFAULT gen_random_uuid(),
   "official_document_id" UUID NOT NULL,
@@ -522,12 +552,7 @@ CREATE TABLE "100_test"."document_chunks" (
 
 COMMENT ON TABLE "100_test"."document_chunks" IS 'Chunks de documentos oficiales con embeddings para búsqueda semántica';
 
--- ============================================================================
--- GRUPO H: NOTAS (Documentos con destinatarios)
--- ============================================================================
--- Sistema de NOTAS: documentos oficiales con destinatarios (TO/CC/BCC) y tracking de apertura
 
--- TABLA 25: notes_recipients (destinatarios de notas)
 CREATE TABLE "100_test"."notes_recipients" (
   "id" UUID NOT NULL DEFAULT gen_random_uuid(),
   "document_id" UUID NOT NULL,
@@ -546,7 +571,6 @@ CREATE TABLE "100_test"."notes_recipients" (
 
 COMMENT ON TABLE "100_test"."notes_recipients" IS 'Destinatarios de notas oficiales (TO, CC, BCC) con soporte para archivado';
 
--- TABLA 26: notes_openings (tracking de apertura de notas)
 CREATE TABLE "100_test"."notes_openings" (
   "id" UUID NOT NULL DEFAULT gen_random_uuid(),
   "document_id" UUID NOT NULL,
@@ -562,13 +586,7 @@ CREATE TABLE "100_test"."notes_openings" (
 
 COMMENT ON TABLE "100_test"."notes_openings" IS 'Registro de apertura de notas (tracking simple sí/no)';
 
--- ============================================================================
--- GRUPO I: REGISTROS
--- ============================================================================
--- Sistema de registros configurables por familia (ARQ, LUM, NORMA, etc.)
--- Cada familia define su propio schema de datos (JSONB) y estados posibles.
 
--- TABLA 27: registry_families (familias de registros del municipio)
 CREATE TABLE "100_test"."registry_families" (
   "id" UUID NOT NULL DEFAULT gen_random_uuid(),
   "global_registry_family_id" UUID,
@@ -578,6 +596,8 @@ CREATE TABLE "100_test"."registry_families" (
   "data_schema" JSONB DEFAULT '{}',
   "states" JSONB DEFAULT '["Activo","Inactivo","Suspendido","Archivado"]',
   "is_active" BOOLEAN NOT NULL DEFAULT true,
+  "is_public" BOOLEAN NOT NULL DEFAULT false,
+  "public_config" JSONB,
   "created_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   "updated_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT "registry_families_pkey" PRIMARY KEY ("id"),
@@ -587,7 +607,6 @@ CREATE TABLE "100_test"."registry_families" (
 
 COMMENT ON TABLE "100_test"."registry_families" IS 'Familias de registros del municipio (copiadas y personalizadas desde global)';
 
--- TABLA 28: registry_family_permissions (permisos por sector)
 CREATE TABLE "100_test"."registry_family_permissions" (
   "id" UUID NOT NULL DEFAULT gen_random_uuid(),
   "registry_family_id" UUID NOT NULL,
@@ -605,7 +624,6 @@ CREATE TABLE "100_test"."registry_family_permissions" (
 
 COMMENT ON TABLE "100_test"."registry_family_permissions" IS 'Permisos de sectores sobre familias de registros';
 
--- TABLA 29: records (registros individuales)
 CREATE TABLE "100_test"."records" (
   "id" UUID NOT NULL DEFAULT gen_random_uuid(),
   "record_number" VARCHAR(50) NOT NULL,
@@ -629,7 +647,6 @@ CREATE TABLE "100_test"."records" (
 
 COMMENT ON TABLE "100_test"."records" IS 'Registros individuales con datos JSONB segun schema de la familia';
 
--- TABLA 30: record_history (historial de cambios)
 CREATE TABLE "100_test"."record_history" (
   "id" UUID NOT NULL DEFAULT gen_random_uuid(),
   "record_id" UUID NOT NULL,
@@ -648,7 +665,6 @@ CREATE TABLE "100_test"."record_history" (
 
 COMMENT ON TABLE "100_test"."record_history" IS 'Historial de cambios en registros';
 
--- TABLA 31: record_relations (relaciones entre registros)
 CREATE TABLE "100_test"."record_relations" (
   "id" UUID NOT NULL DEFAULT gen_random_uuid(),
   "source_record_id" UUID NOT NULL,
@@ -666,7 +682,6 @@ CREATE TABLE "100_test"."record_relations" (
 
 COMMENT ON TABLE "100_test"."record_relations" IS 'Relaciones entre registros (ej: obra relacionada con luminaria)';
 
--- TABLA 32: record_case_links (vinculos registro-expediente)
 CREATE TABLE "100_test"."record_case_links" (
   "id" UUID NOT NULL DEFAULT gen_random_uuid(),
   "record_id" UUID NOT NULL,
@@ -683,7 +698,6 @@ CREATE TABLE "100_test"."record_case_links" (
 
 COMMENT ON TABLE "100_test"."record_case_links" IS 'Vinculos entre registros y expedientes';
 
--- TABLA 33: record_document_links (vinculos registro-documento)
 CREATE TABLE "100_test"."record_document_links" (
   "id" UUID NOT NULL DEFAULT gen_random_uuid(),
   "record_id" UUID NOT NULL,
@@ -700,78 +714,61 @@ CREATE TABLE "100_test"."record_document_links" (
 
 COMMENT ON TABLE "100_test"."record_document_links" IS 'Vinculos entre registros y documentos (draft u oficial)';
 
--- ============================================================================
--- INDICES
--- ============================================================================
 
--- Grupo B: Usuarios
 CREATE INDEX "idx_100_test_users_email" ON "100_test"."users" ("email");
 CREATE INDEX "idx_100_test_users_sector" ON "100_test"."users" ("sector_id");
 
--- Grupo D: Documentos
 CREATE INDEX "idx_100_test_document_draft_status" ON "100_test"."document_draft" ("status");
 CREATE INDEX "idx_100_test_document_draft_created_by" ON "100_test"."document_draft" ("created_by");
 CREATE INDEX "idx_100_test_document_draft_type" ON "100_test"."document_draft" ("document_type_id");
 CREATE INDEX "idx_100_test_document_draft_created_by_date" ON "100_test"."document_draft" ("created_by", "created_at" DESC);
 
--- document_signers: tabla de alta frecuencia (buscar firmantes, docs pendientes)
 CREATE INDEX "idx_100_test_doc_signers_document" ON "100_test"."document_signers" ("document_id");
 CREATE INDEX "idx_100_test_doc_signers_user" ON "100_test"."document_signers" ("user_id");
 CREATE INDEX "idx_100_test_doc_signers_status" ON "100_test"."document_signers" ("status");
 
--- official_documents: búsqueda por número, fecha, departamento
 CREATE INDEX "idx_100_test_official_docs_signer_sectors" ON "100_test"."official_documents" USING GIN ("signer_sector_ids");
 CREATE INDEX "idx_100_test_official_docs_number" ON "100_test"."official_documents" ("official_number");
 CREATE INDEX "idx_100_test_official_docs_signed_at" ON "100_test"."official_documents" ("signed_at" DESC);
 CREATE INDEX "idx_100_test_official_docs_department" ON "100_test"."official_documents" ("department_id");
 
--- Grupo E: Expedientes
 CREATE INDEX "idx_100_test_cases_status" ON "100_test"."cases" ("status");
 CREATE INDEX "idx_100_test_cases_owner_dept" ON "100_test"."cases" ("owner_department_id");
 
--- case_movements: historial de expediente, asignaciones
 CREATE INDEX "idx_100_test_case_mov_case" ON "100_test"."case_movements" ("case_id");
 CREATE INDEX "idx_100_test_case_mov_assigned_sector" ON "100_test"."case_movements" ("assigned_sector_id");
 CREATE INDEX "idx_100_test_case_mov_case_date" ON "100_test"."case_movements" ("case_id", "created_at" DESC);
 
--- case_official_documents: documentos de expediente
 CREATE INDEX "idx_100_test_case_off_docs_case" ON "100_test"."case_official_documents" ("case_id");
 CREATE INDEX "idx_100_test_case_off_docs_doc" ON "100_test"."case_official_documents" ("official_document_id");
 
--- Grupo E.1: Índices de Performance para /cases (optimiza subqueries correlacionadas)
--- Índice 1: Lookup de admin_sector (creation/transfer con estado cerrado)
 CREATE INDEX "idx_100_test_case_mov_admin_lookup" ON "100_test"."case_movements" ("case_id", "type", "is_active", "closed_at" DESC)
     WHERE "type" IN ('creation', 'transfer');
 
--- Índice 2: Verificar si expediente tiene transfers
 CREATE INDEX "idx_100_test_case_mov_transfers" ON "100_test"."case_movements" ("case_id")
     WHERE "type" = 'transfer';
 
--- Índice 3: Sectores asignados activos
 CREATE INDEX "idx_100_test_case_mov_assigned_active" ON "100_test"."case_movements" ("case_id", "assigned_sector_id")
     WHERE "is_active" = true AND "assigned_sector_id" IS NOT NULL;
 
--- Índice 4: Documentos oficiales activos por fecha de vinculación
 CREATE INDEX "idx_100_test_case_off_docs_active" ON "100_test"."case_official_documents" ("case_id", "linking_date" DESC)
     WHERE "is_active" = true;
 
--- Grupo E.2: Indices de Escalabilidad (100K+ filas)
--- cases: ORDER BY created_at en listado
 CREATE INDEX "idx_100_test_cases_created_at" ON "100_test"."cases" ("created_at" DESC);
--- cases: filtro activos + ORDER BY combinado
 CREATE INDEX "idx_100_test_cases_active_created" ON "100_test"."cases" ("created_at" DESC)
     WHERE "status" = 'active';
 
--- document_draft: ORDER BY last_modified_at en listado
 CREATE INDEX "idx_100_test_doc_draft_last_modified" ON "100_test"."document_draft" ("last_modified_at" DESC);
 
--- document_signers: compuesto para LEFT JOIN hotpath en query de documentos
 CREATE INDEX "idx_100_test_doc_signers_doc_user" ON "100_test"."document_signers" ("document_id", "user_id");
 
--- case_proposed_documents: propuestas de vinculación
 CREATE INDEX "idx_100_test_case_prop_docs_case" ON "100_test"."case_proposed_documents" ("case_id");
 
--- Grupo J: Responsables y Favoritos de Expediente
+CREATE UNIQUE INDEX "idx_100_test_ccs_active_unique"
+  ON "100_test"."case_citizen_shares" ("case_id", "citizen_id")
+  WHERE "is_active" = true;
+CREATE INDEX "idx_100_test_ccs_citizen" ON "100_test"."case_citizen_shares" ("citizen_id") WHERE "is_active" = true;
+
 CREATE UNIQUE INDEX "idx_100_test_cr_unique_admin"
   ON "100_test"."case_responsibles" ("case_id")
   WHERE "type" = 'ADMIN' AND "is_active" = true;
@@ -786,31 +783,28 @@ CREATE INDEX "idx_100_test_cr_sector"
 CREATE INDEX "idx_100_test_case_favorites_user"
   ON "100_test"."case_favorites" ("user_id", "created_at" DESC);
 
--- Grupo G: Agente IA (solo document_chunks)
+CREATE INDEX "idx_100_test_case_user_views_user_seen"
+  ON "100_test"."case_user_views" ("user_id", "last_seen_at");
+
 CREATE INDEX "idx_100_test_chunks_doc" ON "100_test"."document_chunks" ("official_document_id");
 
--- Indice vectorial HNSW para búsqueda semántica
 CREATE INDEX "idx_100_test_chunks_embedding" ON "100_test"."document_chunks"
     USING hnsw ("embedding" vector_cosine_ops);
 
--- Indice GIN para BM25 (Hybrid Search)
 CREATE INDEX "idx_100_test_chunks_content_tsv" ON "100_test"."document_chunks"
     USING GIN ("content_tsv");
 
--- Grupo H: Notas
 CREATE INDEX "idx_100_test_notes_recipients_document" ON "100_test"."notes_recipients" ("document_id");
 CREATE INDEX "idx_100_test_notes_recipients_sector" ON "100_test"."notes_recipients" ("sector_id");
 CREATE INDEX "idx_100_test_notes_recipients_sender" ON "100_test"."notes_recipients" ("sender_sector_id");
 CREATE INDEX "idx_100_test_notes_openings_document" ON "100_test"."notes_openings" ("document_id");
 CREATE INDEX "idx_100_test_notes_openings_sector" ON "100_test"."notes_openings" ("sector_id");
 
--- Grupo H.1: Índices parciales para archivado de notas
 CREATE INDEX "idx_100_test_notes_recipients_not_archived" ON "100_test"."notes_recipients" ("sector_id")
     WHERE is_archived = false;
 CREATE INDEX "idx_100_test_notes_recipients_archived" ON "100_test"."notes_recipients" ("sector_id")
     WHERE is_archived = true;
 
--- Grupo D.2: Numeracion unificada
 CREATE INDEX "idx_100_test_counters_updated_at" ON "100_test"."document_number_counters" ("updated_at");
 
 CREATE UNIQUE INDEX "idx_100_test_official_docs_one_reserved_special"
@@ -829,12 +823,10 @@ CREATE INDEX "idx_100_test_official_docs_reserved_at"
   ON "100_test"."official_documents" ("reserved_at")
   WHERE reservation_status = 'RESERVED';
 
--- Grupo A.1: UNIQUE parcial en departments.acronym (activos)
 CREATE UNIQUE INDEX "idx_100_test_departments_acronym_active"
   ON "100_test"."departments" ("acronym")
   WHERE is_active = true AND acronym IS NOT NULL;
 
--- Grupo I: Registros
 CREATE INDEX "idx_100_test_records_family" ON "100_test"."records" ("registry_family_id");
 CREATE INDEX "idx_100_test_records_state" ON "100_test"."records" ("state");
 CREATE INDEX "idx_100_test_records_created_by" ON "100_test"."records" ("created_by_user_id");
@@ -847,12 +839,30 @@ CREATE INDEX "idx_100_test_record_relations_target" ON "100_test"."record_relati
 CREATE INDEX "idx_100_test_record_case_links_record" ON "100_test"."record_case_links" ("record_id");
 CREATE INDEX "idx_100_test_record_doc_links_record" ON "100_test"."record_document_links" ("record_id");
 
--- ============================================================================
--- TRIGGER: Sincronizar users con public.user_registry
--- ============================================================================
--- Cuando se crea/actualiza/elimina un usuario, se sincroniza automaticamente
--- con public.user_registry para el sistema multi-tenant
--- NOTA: El nombre del municipio se obtiene via JOIN con municipalities.name
+
+CREATE TABLE "100_test"."document_type_fields" (
+  "id"                UUID        NOT NULL DEFAULT gen_random_uuid(),
+  "document_type_id"  INT         NOT NULL,
+  "field_definitions" JSONB       NOT NULL DEFAULT '[]'::jsonb,
+  "created_by"        UUID        NOT NULL,
+  "created_at"        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  "updated_at"        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT "dtf_pkey" PRIMARY KEY ("id"),
+  CONSTRAINT "dtf_document_type_fkey" FOREIGN KEY ("document_type_id")
+      REFERENCES "100_test"."document_types" ("id"),
+  CONSTRAINT "dtf_document_type_unique" UNIQUE ("document_type_id")
+);
+
+COMMENT ON TABLE "100_test"."document_type_fields" IS 'Definición de campos de formularios controlados (FFCC). Una fila por tipo de documento. field_definitions es array JSONB con los campos del formulario.';
+
+CREATE INDEX "idx_100_test_document_type_fields_updated_at"
+    ON "100_test"."document_type_fields" ("updated_at");
+
+DROP TRIGGER IF EXISTS trg_dtf_updated_at ON "100_test"."document_type_fields";
+CREATE TRIGGER trg_dtf_updated_at
+    BEFORE UPDATE ON "100_test"."document_type_fields"
+    FOR EACH ROW EXECUTE FUNCTION public.fn_set_updated_at();
+
 
 CREATE OR REPLACE FUNCTION "100_test"."fn_sync_user_registry"()
 RETURNS TRIGGER AS $$
@@ -886,57 +896,42 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Trigger en tabla users
 CREATE TRIGGER "trg_sync_user_registry"
     AFTER INSERT OR UPDATE OR DELETE ON "100_test"."users"
     FOR EACH ROW EXECUTE FUNCTION "100_test"."fn_sync_user_registry"();
 
--- Trigger updated_at para document_number_counters
 DROP TRIGGER IF EXISTS trg_document_number_counters_updated_at ON "100_test"."document_number_counters";
 CREATE TRIGGER "trg_document_number_counters_updated_at"
   BEFORE UPDATE ON "100_test"."document_number_counters"
   FOR EACH ROW EXECUTE FUNCTION "public"."fn_set_updated_at"();
 
--- ============================================================================
--- SECCION 2: SCHEMA 100_test_audit (audit_log + fn_log_change + 6 triggers)
--- ============================================================================
 
--- !! ADVERTENCIA: La siguiente linea destruye todos los registros de auditoria de 100_test !!
--- Solo ejecutar en contexto de redeploy de DEV/TEST. Nunca en PRD.
 DROP SCHEMA IF EXISTS "100_test_audit" CASCADE;
 
--- Crear schema de audit
 CREATE SCHEMA "100_test_audit";
 
--- ============================================================================
--- TABLA: audit_log
--- ============================================================================
 
 CREATE TABLE "100_test_audit"."audit_log" (
   "id" BIGSERIAL NOT NULL,
   "event_time" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   "schema_name" TEXT NOT NULL,
   "table_name" TEXT NOT NULL,
-  "operation" TEXT NOT NULL,  -- INSERT, UPDATE, DELETE
+  "operation" TEXT NOT NULL,
   "user_name" TEXT,
-  "user_id" UUID,  -- ID del usuario que hizo el cambio (inyectado via GUC app.user_id)
-  "auth_source" VARCHAR(20),  -- Origen: jwt, api_key, mcp_oauth, testing, system
+  "user_id" UUID,
+  "auth_source" VARCHAR(20),
   "old_row" JSONB,
   "new_row" JSONB,
-  "changed_fields" TEXT[],  -- Lista de campos modificados
+  "changed_fields" TEXT[],
   CONSTRAINT "audit_log_pkey" PRIMARY KEY ("id")
 );
 
 COMMENT ON TABLE "100_test_audit"."audit_log" IS 'Registro de auditoria del municipio';
 
--- Indice para busquedas por fecha
 CREATE INDEX "idx_100_test_audit_audit_log_event_time" ON "100_test_audit"."audit_log" ("event_time");
 CREATE INDEX "idx_100_test_audit_audit_log_table" ON "100_test_audit"."audit_log" ("table_name");
 CREATE INDEX "idx_100_test_audit_audit_log_user" ON "100_test_audit"."audit_log" ("user_id");
 
--- ============================================================================
--- FUNCION: fn_log_change
--- ============================================================================
 
 CREATE OR REPLACE FUNCTION "100_test_audit"."fn_log_change"()
 RETURNS TRIGGER AS $$
@@ -1009,46 +1004,32 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- ============================================================================
--- TRIGGERS (6 tablas auditadas)
--- ============================================================================
--- Estructura organizacional: departments, sectors
--- Documentos oficiales: official_documents (numeracion)
--- Expedientes: cases, case_movements (asignacion, transferencia, subsanacion),
---              case_official_documents (vinculacion de docs)
--- Trazabilidad: user_id + auth_source inyectados via GUC por el Backend
 
--- Departments
 DROP TRIGGER IF EXISTS "trg_audit_departments" ON "100_test"."departments";
 CREATE TRIGGER "trg_audit_departments"
     AFTER INSERT OR UPDATE OR DELETE ON "100_test"."departments"
     FOR EACH ROW EXECUTE FUNCTION "100_test_audit"."fn_log_change"();
 
--- Sectors
 DROP TRIGGER IF EXISTS "trg_audit_sectors" ON "100_test"."sectors";
 CREATE TRIGGER "trg_audit_sectors"
     AFTER INSERT OR UPDATE OR DELETE ON "100_test"."sectors"
     FOR EACH ROW EXECUTE FUNCTION "100_test_audit"."fn_log_change"();
 
--- Official Documents
 DROP TRIGGER IF EXISTS "trg_audit_official_documents" ON "100_test"."official_documents";
 CREATE TRIGGER "trg_audit_official_documents"
     AFTER INSERT OR UPDATE OR DELETE ON "100_test"."official_documents"
     FOR EACH ROW EXECUTE FUNCTION "100_test_audit"."fn_log_change"();
 
--- Cases
 DROP TRIGGER IF EXISTS "trg_audit_cases" ON "100_test"."cases";
 CREATE TRIGGER "trg_audit_cases"
     AFTER INSERT OR UPDATE OR DELETE ON "100_test"."cases"
     FOR EACH ROW EXECUTE FUNCTION "100_test_audit"."fn_log_change"();
 
--- Case Movements (asignacion, transferencia, subsanacion, document_link)
 DROP TRIGGER IF EXISTS "trg_audit_case_movements" ON "100_test"."case_movements";
 CREATE TRIGGER "trg_audit_case_movements"
     AFTER INSERT OR UPDATE OR DELETE ON "100_test"."case_movements"
     FOR EACH ROW EXECUTE FUNCTION "100_test_audit"."fn_log_change"();
 
--- Case Official Documents (vinculacion/desvinculacion de docs a expedientes)
 DROP TRIGGER IF EXISTS "trg_audit_case_official_documents" ON "100_test"."case_official_documents";
 CREATE TRIGGER "trg_audit_case_official_documents"
     AFTER INSERT OR UPDATE OR DELETE ON "100_test"."case_official_documents"
@@ -1059,19 +1040,15 @@ CREATE TRIGGER "trg_audit_users"
     AFTER INSERT OR UPDATE OR DELETE ON "100_test"."users"
     FOR EACH ROW EXECUTE FUNCTION "100_test_audit"."fn_log_change"();
 
--- ============================================================================
--- SECCION 3: DATOS INICIALES (settings + estado_users + municipio)
--- ============================================================================
 
--- Insertar estados de usuario
 INSERT INTO "100_test"."estado_users" (id, estado) VALUES
   (1, 'Activo'),
   (2, 'Inactivo'),
   (3, 'Suspendido'),
-  (4, 'Eliminado')
+  (4, 'Pendiente'),
+  (5, 'Archivado')
 ON CONFLICT (id) DO NOTHING;
 
--- Insertar settings del municipio
 INSERT INTO "100_test"."settings"
   (id, timezone, bucket_oficial, bucket_tosign, city, primary_color, created_at, updated_at)
 VALUES
@@ -1087,7 +1064,6 @@ VALUES
   )
 ON CONFLICT (id) DO NOTHING;
 
--- Insertar municipio en tabla global
 INSERT INTO "public"."municipalities" (id, name, acronym, country, schema_number, schema_name, primary_color, is_active, created_at)
 VALUES
   (
@@ -1103,9 +1079,6 @@ VALUES
   )
 ON CONFLICT (id) DO NOTHING;
 
--- API key para GDI-AgenteLANG (AI Worker)
--- Key deterministica: gdi-agent-<schema>-<YOUR_KEY_HEX>
--- Generada por: hashlib.md5(("100_test" + "<YOUR_AGENT_SECRET>").encode()).hexdigest()
 INSERT INTO "public"."api_keys" (id, api_key_hash, api_key_prefix, municipality_id, name, description, is_active, created_by)
 VALUES (
   'c1000000-0000-0000-0000-000000000001',
@@ -1119,17 +1092,10 @@ VALUES (
 )
 ON CONFLICT (id) DO NOTHING;
 
--- Limite diario de uso IA para 100_test
 INSERT INTO "public"."ai_usage_limits" (schema_name, daily_limit_usd, is_enabled)
 VALUES ('100_test', 0.15, true)
 ON CONFLICT (schema_name) DO NOTHING;
 
--- ============================================================================
--- SECCION 4: DATOS DEMO (depts, sectors, ranks, users, doc types, etc.)
--- ============================================================================
-
--- PARTE 1: DEPARTAMENTOS (10) - IDs fijos para referencias
--- Formato UUID: d1000000-0000-0000-0000-00000000000X
 
 INSERT INTO "100_test"."departments" (id, name, acronym, parent_id, primary_color, is_active, created_at) VALUES
   ('d1000000-0000-0000-0000-000000000001', 'Intendencia', 'INTE', NULL, '#2C3E50', true, NOW()),
@@ -1144,33 +1110,31 @@ INSERT INTO "100_test"."departments" (id, name, acronym, parent_id, primary_colo
   ('d1000000-0000-0000-0000-00000000000a', 'Obras Particulares', 'OOPA', 'd1000000-0000-0000-0000-000000000001', '#784212', true, NOW())
 ON CONFLICT (id) DO NOTHING;
 
--- PARTE 2: SECTORES (10 PRIV + 4 MESA/ADMIN)
--- Formato UUID: 51000000-0000-0000-0000-00000000000X
-
--- 10 sectores PRIV (uno por departamento) - color = mismo del departamento
-INSERT INTO "100_test"."sectors" (id, department_id, acronym, primary_color, is_active, created_at) VALUES
-  ('51000000-0000-0000-0000-000000000001', 'd1000000-0000-0000-0000-000000000001', 'PRIV', '#2C3E50', true, NOW()),  -- INTE
-  ('51000000-0000-0000-0000-000000000002', 'd1000000-0000-0000-0000-000000000002', 'PRIV', '#1A5276', true, NOW()),  -- LEGAL
-  ('51000000-0000-0000-0000-000000000003', 'd1000000-0000-0000-0000-000000000003', 'PRIV', '#6C3483', true, NOW()),  -- INNO
-  ('51000000-0000-0000-0000-000000000004', 'd1000000-0000-0000-0000-000000000004', 'PRIV', '#1E8449', true, NOW()),  -- SAL
-  ('51000000-0000-0000-0000-000000000005', 'd1000000-0000-0000-0000-000000000005', 'PRIV', '#7D6608', true, NOW()),  -- HAC
-  ('51000000-0000-0000-0000-000000000006', 'd1000000-0000-0000-0000-000000000006', 'PRIV', '#B7950B', true, NOW()),  -- TESO
-  ('51000000-0000-0000-0000-000000000007', 'd1000000-0000-0000-0000-000000000007', 'PRIV', '#5B7D3A', true, NOW()),  -- CONT
-  ('51000000-0000-0000-0000-000000000008', 'd1000000-0000-0000-0000-000000000008', 'PRIV', '#922B21', true, NOW()),  -- SEG
-  ('51000000-0000-0000-0000-000000000009', 'd1000000-0000-0000-0000-000000000009', 'PRIV', '#A04000', true, NOW()),  -- OOPU
-  ('51000000-0000-0000-0000-00000000000a', 'd1000000-0000-0000-0000-00000000000a', 'PRIV', '#784212', true, NOW())   -- OOPA
+INSERT INTO "100_test"."departments" (id, name, acronym, parent_id, primary_color, is_active, is_system, created_at) VALUES
+  ('d1000000-0000-0000-0000-00000000000b', 'Tramites a Distancia', 'TAD', NULL, '#5D6D7E', true, true, NOW())
 ON CONFLICT (id) DO NOTHING;
 
--- 4 sectores MESA y ADMIN - color = gradiente mas claro del departamento (lighten 35%/55%)
+
 INSERT INTO "100_test"."sectors" (id, department_id, acronym, primary_color, is_active, created_at) VALUES
-  ('51000000-0000-0000-0000-00000000000b', 'd1000000-0000-0000-0000-000000000001', 'MESA', '#76828D', true, NOW()),   -- INTE +35%
-  ('51000000-0000-0000-0000-00000000000c', 'd1000000-0000-0000-0000-000000000001', 'ADMIN', '#A0A8B0', true, NOW()),  -- INTE +55%
-  ('51000000-0000-0000-0000-00000000000d', 'd1000000-0000-0000-0000-000000000002', 'MESA', '#6A8FA6', true, NOW()),   -- LEGAL +35%
-  ('51000000-0000-0000-0000-00000000000e', 'd1000000-0000-0000-0000-000000000005', 'MESA', '#AB9C5E', true, NOW())    -- HAC +35%
+  ('51000000-0000-0000-0000-000000000001', 'd1000000-0000-0000-0000-000000000001', 'PRIV', '#2C3E50', true, NOW()),
+  ('51000000-0000-0000-0000-000000000002', 'd1000000-0000-0000-0000-000000000002', 'PRIV', '#1A5276', true, NOW()),
+  ('51000000-0000-0000-0000-000000000003', 'd1000000-0000-0000-0000-000000000003', 'PRIV', '#6C3483', true, NOW()),
+  ('51000000-0000-0000-0000-000000000004', 'd1000000-0000-0000-0000-000000000004', 'PRIV', '#1E8449', true, NOW()),
+  ('51000000-0000-0000-0000-000000000005', 'd1000000-0000-0000-0000-000000000005', 'PRIV', '#7D6608', true, NOW()),
+  ('51000000-0000-0000-0000-000000000006', 'd1000000-0000-0000-0000-000000000006', 'PRIV', '#B7950B', true, NOW()),
+  ('51000000-0000-0000-0000-000000000007', 'd1000000-0000-0000-0000-000000000007', 'PRIV', '#5B7D3A', true, NOW()),
+  ('51000000-0000-0000-0000-000000000008', 'd1000000-0000-0000-0000-000000000008', 'PRIV', '#922B21', true, NOW()),
+  ('51000000-0000-0000-0000-000000000009', 'd1000000-0000-0000-0000-000000000009', 'PRIV', '#A04000', true, NOW()),
+  ('51000000-0000-0000-0000-00000000000a', 'd1000000-0000-0000-0000-00000000000a', 'PRIV', '#784212', true, NOW())
 ON CONFLICT (id) DO NOTHING;
 
--- PARTE 3: RANKS (3) - Jerarquias per-tenant
--- Formato UUID: c0000000-0000-0000-0000-00000000000X
+INSERT INTO "100_test"."sectors" (id, department_id, acronym, primary_color, is_active, created_at) VALUES
+  ('51000000-0000-0000-0000-00000000000b', 'd1000000-0000-0000-0000-000000000001', 'MESA', '#76828D', true, NOW()),
+  ('51000000-0000-0000-0000-00000000000c', 'd1000000-0000-0000-0000-000000000001', 'ADMIN', '#A0A8B0', true, NOW()),
+  ('51000000-0000-0000-0000-00000000000d', 'd1000000-0000-0000-0000-000000000002', 'MESA', '#6A8FA6', true, NOW()),
+  ('51000000-0000-0000-0000-00000000000e', 'd1000000-0000-0000-0000-000000000005', 'MESA', '#AB9C5E', true, NOW())
+ON CONFLICT (id) DO NOTHING;
+
 
 INSERT INTO "100_test"."ranks" (id, name, level, head_signature) VALUES
   ('c0000000-0000-0000-0000-000000000001', 'Intendente',  1, 'Intendente Municipal'),
@@ -1178,8 +1142,6 @@ INSERT INTO "100_test"."ranks" (id, name, level, head_signature) VALUES
   ('c0000000-0000-0000-0000-000000000003', 'Director',    3, 'Director')
 ON CONFLICT (id) DO NOTHING;
 
--- PARTE 3b: CITY SEALS (4) - Sellos per-tenant
--- 3 sellos con rango + 1 generico (Innovador)
 
 INSERT INTO "100_test"."city_seals" (id, name, description, rank_id, created_at) VALUES
   (1, 'Innovador', 'Sello para todos los funcionarios', NULL, NOW()),
@@ -1188,23 +1150,17 @@ INSERT INTO "100_test"."city_seals" (id, name, description, rank_id, created_at)
   (4, 'Director', 'Sello de Director', 'c0000000-0000-0000-0000-000000000003', NOW())
 ON CONFLICT (id) DO NOTHING;
 
--- Reset sequence
 SELECT setval('"100_test".city_seals_id_seq', 4);
 
--- PARTE 3c: ASIGNAR rank_id Y head_user_id A DEPARTAMENTOS
--- Se ejecuta despues de los INSERT para evitar problemas de FK circular
 
--- Asignar rank_id a departamentos
-UPDATE "100_test"."departments" SET rank_id = 'c0000000-0000-0000-0000-000000000001' WHERE id = 'd1000000-0000-0000-0000-000000000001'; -- INTE = Intendente
-UPDATE "100_test"."departments" SET rank_id = 'c0000000-0000-0000-0000-000000000002' WHERE id = 'd1000000-0000-0000-0000-000000000002'; -- LEGAL = Secretario
-UPDATE "100_test"."departments" SET rank_id = 'c0000000-0000-0000-0000-000000000002' WHERE id = 'd1000000-0000-0000-0000-000000000005'; -- HAC = Secretario
-UPDATE "100_test"."departments" SET rank_id = 'c0000000-0000-0000-0000-000000000003' WHERE id = 'd1000000-0000-0000-0000-000000000008'; -- SEG = Director
-UPDATE "100_test"."departments" SET rank_id = 'c0000000-0000-0000-0000-000000000003' WHERE id = 'd1000000-0000-0000-0000-000000000009'; -- OOPU = Director
-UPDATE "100_test"."departments" SET rank_id = 'c0000000-0000-0000-0000-000000000003' WHERE id = 'd1000000-0000-0000-0000-00000000000a'; -- OOPA = Director
-UPDATE "100_test"."departments" SET rank_id = 'c0000000-0000-0000-0000-000000000003' WHERE id = 'd1000000-0000-0000-0000-000000000003'; -- INNO = Director
+UPDATE "100_test"."departments" SET rank_id = 'c0000000-0000-0000-0000-000000000001' WHERE id = 'd1000000-0000-0000-0000-000000000001';
+UPDATE "100_test"."departments" SET rank_id = 'c0000000-0000-0000-0000-000000000002' WHERE id = 'd1000000-0000-0000-0000-000000000002';
+UPDATE "100_test"."departments" SET rank_id = 'c0000000-0000-0000-0000-000000000002' WHERE id = 'd1000000-0000-0000-0000-000000000005';
+UPDATE "100_test"."departments" SET rank_id = 'c0000000-0000-0000-0000-000000000003' WHERE id = 'd1000000-0000-0000-0000-000000000008';
+UPDATE "100_test"."departments" SET rank_id = 'c0000000-0000-0000-0000-000000000003' WHERE id = 'd1000000-0000-0000-0000-000000000009';
+UPDATE "100_test"."departments" SET rank_id = 'c0000000-0000-0000-0000-000000000003' WHERE id = 'd1000000-0000-0000-0000-00000000000a';
+UPDATE "100_test"."departments" SET rank_id = 'c0000000-0000-0000-0000-000000000003' WHERE id = 'd1000000-0000-0000-0000-000000000003';
 
--- PARTE 4: USUARIOS FICTICIOS (15)
--- Formato UUID: a1000000-0000-0000-0000-00000000000X
 
 INSERT INTO "100_test"."users" (id, auth_id, email, full_name, sector_id, estado, created_at) VALUES
   ('a1000000-0000-0000-0000-000000000001', NULL, 'mrodriguez@munitest.com', 'Maria Rodriguez', '51000000-0000-0000-0000-000000000001', 1, NOW()),
@@ -1218,24 +1174,20 @@ INSERT INTO "100_test"."users" (id, auth_id, email, full_name, sector_id, estado
   ('a1000000-0000-0000-0000-000000000009', NULL, 'vcastro@munitest.com', 'Valentina Castro', '51000000-0000-0000-0000-000000000009', 1, NOW()),
   ('a1000000-0000-0000-0000-00000000000a', NULL, 'mherrera@munitest.com', 'Miguel Herrera', '51000000-0000-0000-0000-00000000000a', 1, NOW()),
   ('a1000000-0000-0000-0000-00000000000b', NULL, 'tester@munitest.com', 'Usuario Tester', '51000000-0000-0000-0000-000000000001', 1, NOW()),
-  -- 4 usuarios nuevos para sectores MESA/ADMIN
   ('a1000000-0000-0000-0000-00000000000c', NULL, 'emorales@munitest.com', 'Elena Morales', '51000000-0000-0000-0000-00000000000b', 1, NOW()),
   ('a1000000-0000-0000-0000-00000000000d', NULL, 'rnavarro@munitest.com', 'Ricardo Navarro', '51000000-0000-0000-0000-00000000000c', 1, NOW()),
   ('a1000000-0000-0000-0000-00000000000e', NULL, 'amedina@munitest.com', 'Andrea Medina', '51000000-0000-0000-0000-00000000000d', 1, NOW()),
   ('a1000000-0000-0000-0000-00000000000f', NULL, 'prios@munitest.com', 'Pablo Rios', '51000000-0000-0000-0000-00000000000e', 1, NOW())
 ON CONFLICT (id) DO NOTHING;
 
--- AI Worker (service account para background processing)
 INSERT INTO "100_test"."users" (id, auth_id, email, full_name, sector_id, estado, created_at) VALUES
   ('a1000000-0000-0000-0000-000000000100', NULL, 'ai-worker@gdi.internal', 'AI Worker', NULL, 1, NOW())
 ON CONFLICT (id) DO NOTHING;
 
--- Testing User (sistema, UUID fijo, para fallback de numeracion)
 INSERT INTO "100_test"."users" (id, auth_id, email, full_name, sector_id, estado, created_at) VALUES
   ('00000000-0000-0000-0000-000074657374', NULL, 'test@example.com', 'Testing User', '51000000-0000-0000-0000-000000000001', 1, NOW())
 ON CONFLICT (id) DO NOTHING;
 
--- Autorizar AI Worker para todas las API Keys del schema
 INSERT INTO public.api_key_users (api_key_id, user_id, schema_name)
 SELECT ak.id, 'a1000000-0000-0000-0000-000000000100'::uuid, '100_test'
 FROM public.api_keys ak
@@ -1243,70 +1195,61 @@ JOIN public.municipalities m ON ak.municipality_id = m.id
 WHERE m.schema_name = '100_test' AND ak.is_active = true
 ON CONFLICT ON CONSTRAINT api_key_users_key_user_schema_unique DO NOTHING;
 
--- Asignar head_user_id a departamentos (despues de crear usuarios)
-UPDATE "100_test"."departments" SET head_user_id = 'a1000000-0000-0000-0000-000000000001' WHERE id = 'd1000000-0000-0000-0000-000000000001'; -- INTE -> mrodriguez
-UPDATE "100_test"."departments" SET head_user_id = 'a1000000-0000-0000-0000-000000000002' WHERE id = 'd1000000-0000-0000-0000-000000000002'; -- LEGAL -> jperez
-UPDATE "100_test"."departments" SET head_user_id = 'a1000000-0000-0000-0000-000000000003' WHERE id = 'd1000000-0000-0000-0000-000000000003'; -- INNO -> lgomez
-UPDATE "100_test"."departments" SET head_user_id = 'a1000000-0000-0000-0000-000000000004' WHERE id = 'd1000000-0000-0000-0000-000000000004'; -- SAL -> cmartinez
-UPDATE "100_test"."departments" SET head_user_id = 'a1000000-0000-0000-0000-000000000005' WHERE id = 'd1000000-0000-0000-0000-000000000005'; -- HAC -> alopez
-UPDATE "100_test"."departments" SET head_user_id = 'a1000000-0000-0000-0000-000000000006' WHERE id = 'd1000000-0000-0000-0000-000000000006'; -- TESO -> rfernandez
-UPDATE "100_test"."departments" SET head_user_id = 'a1000000-0000-0000-0000-000000000007' WHERE id = 'd1000000-0000-0000-0000-000000000007'; -- CONT -> pgarcia
-UPDATE "100_test"."departments" SET head_user_id = 'a1000000-0000-0000-0000-000000000008' WHERE id = 'd1000000-0000-0000-0000-000000000008'; -- SEG -> dsilva
-UPDATE "100_test"."departments" SET head_user_id = 'a1000000-0000-0000-0000-000000000009' WHERE id = 'd1000000-0000-0000-0000-000000000009'; -- OOPU -> vcastro
-UPDATE "100_test"."departments" SET head_user_id = 'a1000000-0000-0000-0000-00000000000a' WHERE id = 'd1000000-0000-0000-0000-00000000000a'; -- OOPA -> mherrera
+UPDATE "100_test"."departments" SET head_user_id = 'a1000000-0000-0000-0000-000000000001' WHERE id = 'd1000000-0000-0000-0000-000000000001';
+UPDATE "100_test"."departments" SET head_user_id = 'a1000000-0000-0000-0000-000000000002' WHERE id = 'd1000000-0000-0000-0000-000000000002';
+UPDATE "100_test"."departments" SET head_user_id = 'a1000000-0000-0000-0000-000000000003' WHERE id = 'd1000000-0000-0000-0000-000000000003';
+UPDATE "100_test"."departments" SET head_user_id = 'a1000000-0000-0000-0000-000000000004' WHERE id = 'd1000000-0000-0000-0000-000000000004';
+UPDATE "100_test"."departments" SET head_user_id = 'a1000000-0000-0000-0000-000000000005' WHERE id = 'd1000000-0000-0000-0000-000000000005';
+UPDATE "100_test"."departments" SET head_user_id = 'a1000000-0000-0000-0000-000000000006' WHERE id = 'd1000000-0000-0000-0000-000000000006';
+UPDATE "100_test"."departments" SET head_user_id = 'a1000000-0000-0000-0000-000000000007' WHERE id = 'd1000000-0000-0000-0000-000000000007';
+UPDATE "100_test"."departments" SET head_user_id = 'a1000000-0000-0000-0000-000000000008' WHERE id = 'd1000000-0000-0000-0000-000000000008';
+UPDATE "100_test"."departments" SET head_user_id = 'a1000000-0000-0000-0000-000000000009' WHERE id = 'd1000000-0000-0000-0000-000000000009';
+UPDATE "100_test"."departments" SET head_user_id = 'a1000000-0000-0000-0000-00000000000a' WHERE id = 'd1000000-0000-0000-0000-00000000000a';
 
--- PARTE 5: USER SEALS (15)
--- Formato UUID: e1000000-0000-0000-0000-00000000000X
--- city_seal_id: 2=Intendente, 3=Secretario, 4=Director, 1=Innovador
 
 INSERT INTO "100_test"."user_seals" (id, user_id, city_seal_id, created_at) VALUES
-  ('e1000000-0000-0000-0000-000000000001', 'a1000000-0000-0000-0000-000000000001', 2, NOW()),  -- mrodriguez -> Intendente
-  ('e1000000-0000-0000-0000-000000000002', 'a1000000-0000-0000-0000-000000000002', 3, NOW()),  -- jperez -> Secretario
-  ('e1000000-0000-0000-0000-000000000003', 'a1000000-0000-0000-0000-000000000003', 4, NOW()),  -- lgomez -> Director
-  ('e1000000-0000-0000-0000-000000000004', 'a1000000-0000-0000-0000-000000000004', 4, NOW()),  -- cmartinez -> Director
-  ('e1000000-0000-0000-0000-000000000005', 'a1000000-0000-0000-0000-000000000005', 3, NOW()),  -- alopez -> Secretario
-  ('e1000000-0000-0000-0000-000000000006', 'a1000000-0000-0000-0000-000000000006', 4, NOW()),  -- rfernandez -> Director
-  ('e1000000-0000-0000-0000-000000000007', 'a1000000-0000-0000-0000-000000000007', 4, NOW()),  -- pgarcia -> Director
-  ('e1000000-0000-0000-0000-000000000008', 'a1000000-0000-0000-0000-000000000008', 4, NOW()),  -- dsilva -> Director
-  ('e1000000-0000-0000-0000-000000000009', 'a1000000-0000-0000-0000-000000000009', 4, NOW()),  -- vcastro -> Director
-  ('e1000000-0000-0000-0000-00000000000a', 'a1000000-0000-0000-0000-00000000000a', 4, NOW()),  -- mherrera -> Director
-  ('e1000000-0000-0000-0000-00000000000b', 'a1000000-0000-0000-0000-00000000000b', 1, NOW()),  -- tester -> Innovador
-  ('e1000000-0000-0000-0000-00000000000c', 'a1000000-0000-0000-0000-00000000000c', 1, NOW()),  -- emorales -> Innovador
-  ('e1000000-0000-0000-0000-00000000000d', 'a1000000-0000-0000-0000-00000000000d', 1, NOW()),  -- rnavarro -> Innovador
-  ('e1000000-0000-0000-0000-00000000000e', 'a1000000-0000-0000-0000-00000000000e', 1, NOW()),  -- amedina -> Innovador
-  ('e1000000-0000-0000-0000-00000000000f', 'a1000000-0000-0000-0000-00000000000f', 1, NOW()),  -- prios -> Innovador
-  ('e1000000-0000-0000-0000-000000000010', '00000000-0000-0000-0000-000074657374', 1, NOW())   -- Testing User -> Innovador
+  ('e1000000-0000-0000-0000-000000000001', 'a1000000-0000-0000-0000-000000000001', 2, NOW()),
+  ('e1000000-0000-0000-0000-000000000002', 'a1000000-0000-0000-0000-000000000002', 3, NOW()),
+  ('e1000000-0000-0000-0000-000000000003', 'a1000000-0000-0000-0000-000000000003', 4, NOW()),
+  ('e1000000-0000-0000-0000-000000000004', 'a1000000-0000-0000-0000-000000000004', 4, NOW()),
+  ('e1000000-0000-0000-0000-000000000005', 'a1000000-0000-0000-0000-000000000005', 3, NOW()),
+  ('e1000000-0000-0000-0000-000000000006', 'a1000000-0000-0000-0000-000000000006', 4, NOW()),
+  ('e1000000-0000-0000-0000-000000000007', 'a1000000-0000-0000-0000-000000000007', 4, NOW()),
+  ('e1000000-0000-0000-0000-000000000008', 'a1000000-0000-0000-0000-000000000008', 4, NOW()),
+  ('e1000000-0000-0000-0000-000000000009', 'a1000000-0000-0000-0000-000000000009', 4, NOW()),
+  ('e1000000-0000-0000-0000-00000000000a', 'a1000000-0000-0000-0000-00000000000a', 4, NOW()),
+  ('e1000000-0000-0000-0000-00000000000b', 'a1000000-0000-0000-0000-00000000000b', 1, NOW()),
+  ('e1000000-0000-0000-0000-00000000000c', 'a1000000-0000-0000-0000-00000000000c', 1, NOW()),
+  ('e1000000-0000-0000-0000-00000000000d', 'a1000000-0000-0000-0000-00000000000d', 1, NOW()),
+  ('e1000000-0000-0000-0000-00000000000e', 'a1000000-0000-0000-0000-00000000000e', 1, NOW()),
+  ('e1000000-0000-0000-0000-00000000000f', 'a1000000-0000-0000-0000-00000000000f', 1, NOW()),
+  ('e1000000-0000-0000-0000-000000000010', '00000000-0000-0000-0000-000074657374', 1, NOW())
 ON CONFLICT (id) DO NOTHING;
 
--- PARTE 5b: USER ROLES (15)
--- mrodriguez = Administrador, todos los demas = Funcionario
 
 INSERT INTO "100_test"."user_roles" (user_id, role_id, created_at) VALUES
-  ('a1000000-0000-0000-0000-000000000001', 'a0000000-0000-0000-0000-000000000003', NOW()),  -- mrodriguez -> Administrador
-  ('a1000000-0000-0000-0000-000000000002', 'a0000000-0000-0000-0000-000000000002', NOW()),  -- jperez -> Funcionario
-  ('a1000000-0000-0000-0000-000000000003', 'a0000000-0000-0000-0000-000000000002', NOW()),  -- lgomez -> Funcionario
-  ('a1000000-0000-0000-0000-000000000004', 'a0000000-0000-0000-0000-000000000002', NOW()),  -- cmartinez -> Funcionario
-  ('a1000000-0000-0000-0000-000000000005', 'a0000000-0000-0000-0000-000000000002', NOW()),  -- alopez -> Funcionario
-  ('a1000000-0000-0000-0000-000000000006', 'a0000000-0000-0000-0000-000000000002', NOW()),  -- rfernandez -> Funcionario
-  ('a1000000-0000-0000-0000-000000000007', 'a0000000-0000-0000-0000-000000000002', NOW()),  -- pgarcia -> Funcionario
-  ('a1000000-0000-0000-0000-000000000008', 'a0000000-0000-0000-0000-000000000002', NOW()),  -- dsilva -> Funcionario
-  ('a1000000-0000-0000-0000-000000000009', 'a0000000-0000-0000-0000-000000000002', NOW()),  -- vcastro -> Funcionario
-  ('a1000000-0000-0000-0000-00000000000a', 'a0000000-0000-0000-0000-000000000002', NOW()),  -- mherrera -> Funcionario
-  ('a1000000-0000-0000-0000-00000000000b', 'a0000000-0000-0000-0000-000000000002', NOW()),  -- tester -> Funcionario
-  ('a1000000-0000-0000-0000-00000000000c', 'a0000000-0000-0000-0000-000000000002', NOW()),  -- emorales -> Funcionario
-  ('a1000000-0000-0000-0000-00000000000d', 'a0000000-0000-0000-0000-000000000002', NOW()),  -- rnavarro -> Funcionario
-  ('a1000000-0000-0000-0000-00000000000e', 'a0000000-0000-0000-0000-000000000002', NOW()),  -- amedina -> Funcionario
-  ('a1000000-0000-0000-0000-00000000000f', 'a0000000-0000-0000-0000-000000000002', NOW()),  -- prios -> Funcionario
-  ('00000000-0000-0000-0000-000074657374', 'a0000000-0000-0000-0000-000000000004', NOW())   -- Testing User -> Sistema TEST
+  ('a1000000-0000-0000-0000-000000000001', 'a0000000-0000-0000-0000-000000000003', NOW()),
+  ('a1000000-0000-0000-0000-000000000002', 'a0000000-0000-0000-0000-000000000002', NOW()),
+  ('a1000000-0000-0000-0000-000000000003', 'a0000000-0000-0000-0000-000000000002', NOW()),
+  ('a1000000-0000-0000-0000-000000000004', 'a0000000-0000-0000-0000-000000000002', NOW()),
+  ('a1000000-0000-0000-0000-000000000005', 'a0000000-0000-0000-0000-000000000002', NOW()),
+  ('a1000000-0000-0000-0000-000000000006', 'a0000000-0000-0000-0000-000000000002', NOW()),
+  ('a1000000-0000-0000-0000-000000000007', 'a0000000-0000-0000-0000-000000000002', NOW()),
+  ('a1000000-0000-0000-0000-000000000008', 'a0000000-0000-0000-0000-000000000002', NOW()),
+  ('a1000000-0000-0000-0000-000000000009', 'a0000000-0000-0000-0000-000000000002', NOW()),
+  ('a1000000-0000-0000-0000-00000000000a', 'a0000000-0000-0000-0000-000000000002', NOW()),
+  ('a1000000-0000-0000-0000-00000000000b', 'a0000000-0000-0000-0000-000000000002', NOW()),
+  ('a1000000-0000-0000-0000-00000000000c', 'a0000000-0000-0000-0000-000000000002', NOW()),
+  ('a1000000-0000-0000-0000-00000000000d', 'a0000000-0000-0000-0000-000000000002', NOW()),
+  ('a1000000-0000-0000-0000-00000000000e', 'a0000000-0000-0000-0000-000000000002', NOW()),
+  ('a1000000-0000-0000-0000-00000000000f', 'a0000000-0000-0000-0000-000000000002', NOW()),
+  ('00000000-0000-0000-0000-000074657374', 'a0000000-0000-0000-0000-000000000004', NOW())
 ON CONFLICT ON CONSTRAINT "user_roles_unique" DO NOTHING;
 
--- PARTE 6: DOCUMENT TYPES (24)
--- global_document_type_id referencia IDs de 02-seed-global.sql
 
 INSERT INTO "100_test"."document_types"
   (id, global_document_type_id, name, acronym, description, signature_policy, is_active, type, created_at)
 VALUES
-  -- Tipos basicos de uso frecuente
   (1, 'd0000000-0000-0000-0000-000000000001', 'Informe', 'IF', 'Informe tecnico o administrativo', 'electronic', true, 'HTML', NOW()),
   (2, 'd0000000-0000-0000-0000-000000000002', 'Nota', 'NOTA', 'Nota oficial con destinatarios TO/CC/BCC y tracking de apertura', 'electronic', true, 'NOTA', NOW()),
   (3, 'd0000000-0000-0000-0000-000000000003', 'Providencia', 'PROV', 'Providencia administrativa', 'electronic', true, 'HTML', NOW()),
@@ -1317,7 +1260,6 @@ VALUES
   (8, 'd0000000-0000-0000-0000-000000000010', 'Resolucion', 'RESOL', 'Resolucion administrativa', 'electronic', true, 'HTML', NOW()),
   (9, 'd0000000-0000-0000-0000-000000000013', 'Dictamen', 'DICTA', 'Dictamen legal o tecnico', 'electronic', true, 'HTML', NOW()),
   (10, 'd0000000-0000-0000-0000-000000000015', 'Oficio Judicial', 'OFJUD', 'Oficio judicial', 'electronic', true, 'Importado', NOW()),
-  -- Tipos especificos de tramites
   (11, 'd0000000-0000-0000-0000-00000000001f', 'Acta de Inspeccion', 'AINSP', 'Acta de inspeccion', 'electronic', true, 'HTML', NOW()),
   (12, 'd0000000-0000-0000-0000-000000000020', 'Permiso General', 'PERMI', 'Permiso general', 'electronic', true, 'HTML', NOW()),
   (13, 'd0000000-0000-0000-0000-000000000022', 'Cert. Inspeccion Final', 'CIF', 'Certificado de inspeccion final', 'electronic', true, 'HTML', NOW()),
@@ -1326,37 +1268,35 @@ VALUES
   (16, 'd0000000-0000-0000-0000-000000000037', 'Constancia de Pago', 'PAGO', 'Constancia de pago', 'electronic', true, 'HTML', NOW()),
   (17, 'd0000000-0000-0000-0000-000000000039', 'Pre-Pliego', 'PREPL', 'Pre-pliego para compras y contrataciones', 'electronic', true, 'HTML', NOW()),
   (18, 'd0000000-0000-0000-0000-00000000003a', 'Pliego Definitivo', 'PLIEG', 'Pliego definitivo para licitaciones', 'electronic', true, 'HTML', NOW()),
-  -- Tipos HCD (Honorable Concejo Deliberante)
   (19, 'd0000000-0000-0000-0000-00000000003e', 'Ordenanza HCD', 'PLORD', 'Ordenanza sancionada por el Honorable Concejo Deliberante', 'electronic', true, 'Importado', NOW()),
   (20, 'd0000000-0000-0000-0000-00000000003f', 'Resolucion HCD', 'PLRES', 'Resolucion emitida por el Honorable Concejo Deliberante', 'electronic', true, 'Importado', NOW()),
   (21, 'd0000000-0000-0000-0000-000000000040', 'Comunicacion HCD', 'PLCOM', 'Comunicacion oficial del Honorable Concejo Deliberante', 'electronic', true, 'Importado', NOW()),
-  -- Legajo
   (22, 'd0000000-0000-0000-0000-000000000080', 'Informe RLM', 'IFRLM', 'Informe de Registro Legajo Multiproposito (generado on-demand desde un legajo RLM)', 'electronic', true, 'HTML', NOW()),
-  -- Tipos internos del sistema (no visibles para usuarios)
   (23, 'd0000000-0000-0000-0000-00000000003c', 'Pase', 'PV', 'Pase de expediente (Uso exclusivo modulo EE)', 'electronic', false, 'HTML', NOW()),
   (24, 'd0000000-0000-0000-0000-00000000003d', 'Caratula', 'CAEX', 'Caratula de expediente (Uso exclusivo modulo EE)', 'electronic', false, 'HTML', NOW()),
   (25, 'd0000000-0000-0000-0000-000000000042', 'Testing', 'TST', 'Documento generado automaticamente cuando una firma falla (Uso exclusivo del sistema)', 'electronic', false, 'HTML', NOW())
 ON CONFLICT (id) DO NOTHING;
 
--- Reset sequence
 SELECT setval('"100_test".document_types_id_seq', 24);
 
--- PARTE 7: CASE TEMPLATES (6)
--- Formato UUID: c1000000-0000-0000-0000-00000000000X
+UPDATE "100_test"."document_types" SET accepts_embedded_files = true WHERE id = 6;
+
+UPDATE "100_test"."document_types" SET visibility = 'reservado' WHERE id = 9;
+
 
 INSERT INTO "100_test"."case_templates"
-  (id, global_case_template_id, type_name, acronym, description, creation_channel, filing_department_id, is_active, created_at)
+  (id, global_case_template_id, type_name, acronym, description, creation_channel, filing_department_id, filing_sector_id, is_active, created_at)
 VALUES
-  ('c1000000-0000-0000-0000-000000000001', 'b0000000-0000-0000-0000-000000000005', 'Testing Automatizado', 'TEST', 'Expediente para pruebas automatizadas del Equipo TESTERS', 'web', 'd1000000-0000-0000-0000-000000000003', true, NOW()),
-  ('c1000000-0000-0000-0000-000000000002', 'b0000000-0000-0000-0000-000000000006', 'Habilitacion Comercial', 'HABI', 'Tramite de habilitacion de locales comerciales', 'web', 'd1000000-0000-0000-0000-000000000001', true, NOW()),
-  ('c1000000-0000-0000-0000-000000000003', 'b0000000-0000-0000-0000-000000000007', 'Permiso Industrial', 'HIND', 'Tramite de permiso para establecimientos industriales', 'web', 'd1000000-0000-0000-0000-000000000001', true, NOW()),
-  ('c1000000-0000-0000-0000-000000000004', 'b0000000-0000-0000-0000-000000000008', 'Compras y Contrataciones', 'COMP', 'Gestion de compras directas y contrataciones', 'web', 'd1000000-0000-0000-0000-000000000005', true, NOW()),
-  ('c1000000-0000-0000-0000-000000000005', 'b0000000-0000-0000-0000-000000000009', 'Demanda Judicial', 'DEM', 'Seguimiento de demandas judiciales', 'web', 'd1000000-0000-0000-0000-000000000002', true, NOW()),
-  ('c1000000-0000-0000-0000-000000000006', 'b0000000-0000-0000-0000-00000000000a', 'Recursos Humanos', 'RRHH', 'Gestion administrativa del personal municipal', 'web', 'd1000000-0000-0000-0000-000000000001', true, NOW())
+  ('c1000000-0000-0000-0000-000000000001', 'b0000000-0000-0000-0000-000000000005', 'Testing Automatizado', 'TEST', 'Expediente para pruebas automatizadas del Equipo TESTERS', 'web', 'd1000000-0000-0000-0000-000000000003', '51000000-0000-0000-0000-000000000003', true, NOW()),
+  ('c1000000-0000-0000-0000-000000000002', 'b0000000-0000-0000-0000-000000000006', 'Habilitacion Comercial', 'HABI', 'Tramite de habilitacion de locales comerciales', 'web', 'd1000000-0000-0000-0000-000000000001', '51000000-0000-0000-0000-000000000001', true, NOW()),
+  ('c1000000-0000-0000-0000-000000000003', 'b0000000-0000-0000-0000-000000000007', 'Permiso Industrial', 'HIND', 'Tramite de permiso para establecimientos industriales', 'web', 'd1000000-0000-0000-0000-000000000001', '51000000-0000-0000-0000-000000000001', true, NOW()),
+  ('c1000000-0000-0000-0000-000000000004', 'b0000000-0000-0000-0000-000000000008', 'Compras y Contrataciones', 'COMP', 'Gestion de compras directas y contrataciones', 'web', 'd1000000-0000-0000-0000-000000000005', '51000000-0000-0000-0000-000000000005', true, NOW()),
+  ('c1000000-0000-0000-0000-000000000005', 'b0000000-0000-0000-0000-000000000009', 'Demanda Judicial', 'DEM', 'Seguimiento de demandas judiciales', 'web', 'd1000000-0000-0000-0000-000000000002', '51000000-0000-0000-0000-000000000002', true, NOW()),
+  ('c1000000-0000-0000-0000-000000000006', 'b0000000-0000-0000-0000-00000000000a', 'Recursos Humanos', 'RRHH', 'Gestion administrativa del personal municipal', 'web', 'd1000000-0000-0000-0000-000000000001', '51000000-0000-0000-0000-000000000001', true, NOW())
 ON CONFLICT (id) DO NOTHING;
 
--- PARTE 8: REGISTRY FAMILIES (3) + PERMISOS
--- Formato UUID: f1000000-0000-0000-0000-00000000000X
+UPDATE "100_test"."case_templates" SET visibility = 'reservado' WHERE id = 'c1000000-0000-0000-0000-000000000005';
+
 
 INSERT INTO "100_test"."registry_families"
   (id, global_registry_family_id, code, name, description, data_schema, states, is_active, created_at)
@@ -1396,32 +1336,23 @@ VALUES
 )
 ON CONFLICT (id) DO NOTHING;
 
--- Permisos de sectores sobre familias de registros
 INSERT INTO "100_test"."registry_family_permissions"
   (registry_family_id, sector_id, can_create, can_edit, can_view, can_verify, created_at)
 VALUES
-  -- ARQ: OOPA/PRIV y OOPU/PRIV
-  ('f1000000-0000-0000-0000-000000000001', '51000000-0000-0000-0000-00000000000a', true, true, true, true, NOW()),  -- OOPA/PRIV
-  ('f1000000-0000-0000-0000-000000000001', '51000000-0000-0000-0000-000000000009', true, true, true, true, NOW()),  -- OOPU/PRIV
-  -- LUM: OOPU/PRIV
-  ('f1000000-0000-0000-0000-000000000002', '51000000-0000-0000-0000-000000000009', true, true, true, true, NOW()),  -- OOPU/PRIV
-  -- NORMA: LEGAL/PRIV
-  ('f1000000-0000-0000-0000-000000000003', '51000000-0000-0000-0000-000000000002', true, true, true, true, NOW())   -- LEGAL/PRIV
+  ('f1000000-0000-0000-0000-000000000001', '51000000-0000-0000-0000-00000000000a', true, true, true, true, NOW()),
+  ('f1000000-0000-0000-0000-000000000001', '51000000-0000-0000-0000-000000000009', true, true, true, true, NOW()),
+  ('f1000000-0000-0000-0000-000000000002', '51000000-0000-0000-0000-000000000009', true, true, true, true, NOW()),
+  ('f1000000-0000-0000-0000-000000000003', '51000000-0000-0000-0000-000000000002', true, true, true, true, NOW())
 ON CONFLICT ON CONSTRAINT "rfp_unique" DO NOTHING;
 
--- ============================================================================
--- SECCION 5: DRAFTS DE BIENVENIDA (5)
--- ============================================================================
--- 5 documentos borrador tipo INF para que los usuarios principales
--- tengan algo en su bandeja al entrar por primera vez
 
 INSERT INTO "100_test"."document_draft"
   (id, created_by, document_type_id, reference, content, status, created_at)
 VALUES
   (
     'dd000000-0000-0000-0000-000000000001',
-    'a1000000-0000-0000-0000-000000000001',  -- mrodriguez (INTE)
-    1,  -- IF (Informe)
+    'a1000000-0000-0000-0000-000000000001',
+    1,
     'Bienvenida a GDI',
     '{"html": "<h2>Bienvenido a GDI</h2><p>Este es su primer documento en el Sistema de Gestion Documental Inteligente.</p><p>Desde aqui puede crear, firmar y gestionar documentos oficiales de forma digital.</p><p><strong>Intendencia</strong></p>"}'::jsonb,
     'draft',
@@ -1429,8 +1360,8 @@ VALUES
   ),
   (
     'dd000000-0000-0000-0000-000000000002',
-    'a1000000-0000-0000-0000-000000000002',  -- jperez (LEGAL)
-    1,  -- IF (Informe)
+    'a1000000-0000-0000-0000-000000000002',
+    1,
     'Bienvenida a GDI',
     '{"html": "<h2>Bienvenido a GDI</h2><p>Este es su primer documento en el Sistema de Gestion Documental Inteligente.</p><p>Desde aqui puede crear, firmar y gestionar documentos oficiales de forma digital.</p><p><strong>Legal y Tecnica</strong></p>"}'::jsonb,
     'draft',
@@ -1438,8 +1369,8 @@ VALUES
   ),
   (
     'dd000000-0000-0000-0000-000000000003',
-    'a1000000-0000-0000-0000-000000000003',  -- lgomez (INNO)
-    1,  -- IF (Informe)
+    'a1000000-0000-0000-0000-000000000003',
+    1,
     'Bienvenida a GDI',
     '{"html": "<h2>Bienvenido a GDI</h2><p>Este es su primer documento en el Sistema de Gestion Documental Inteligente.</p><p>Desde aqui puede crear, firmar y gestionar documentos oficiales de forma digital.</p><p><strong>Innovacion</strong></p>"}'::jsonb,
     'draft',
@@ -1447,8 +1378,8 @@ VALUES
   ),
   (
     'dd000000-0000-0000-0000-000000000004',
-    'a1000000-0000-0000-0000-000000000005',  -- alopez (HAC)
-    1,  -- IF (Informe)
+    'a1000000-0000-0000-0000-000000000005',
+    1,
     'Bienvenida a GDI',
     '{"html": "<h2>Bienvenido a GDI</h2><p>Este es su primer documento en el Sistema de Gestion Documental Inteligente.</p><p>Desde aqui puede crear, firmar y gestionar documentos oficiales de forma digital.</p><p><strong>Hacienda</strong></p>"}'::jsonb,
     'draft',
@@ -1456,8 +1387,8 @@ VALUES
   ),
   (
     'dd000000-0000-0000-0000-000000000005',
-    'a1000000-0000-0000-0000-000000000008',  -- dsilva (SEG)
-    1,  -- IF (Informe)
+    'a1000000-0000-0000-0000-000000000008',
+    1,
     'Bienvenida a GDI',
     '{"html": "<h2>Bienvenido a GDI</h2><p>Este es su primer documento en el Sistema de Gestion Documental Inteligente.</p><p>Desde aqui puede crear, firmar y gestionar documentos oficiales de forma digital.</p><p><strong>Seguridad</strong></p>"}'::jsonb,
     'draft',
@@ -1465,9 +1396,6 @@ VALUES
   )
 ON CONFLICT (id) DO NOTHING;
 
--- ============================================================================
--- RESUMEN FINAL
--- ============================================================================
 
 DO $$
 BEGIN
@@ -1477,8 +1405,8 @@ BEGIN
     RAISE NOTICE '============================================================';
     RAISE NOTICE '';
     RAISE NOTICE 'SCHEMA 100_test:';
-    RAISE NOTICE '  35 tablas creadas (Grupos A-J: +case_responsibles +case_favorites)';
-    RAISE NOTICE '  Todos los indices creados (incluye Grupo J: 5 indices nuevos)';
+    RAISE NOTICE '  37 tablas creadas (Grupos A-J: +case_responsibles +case_favorites +case_user_views +notification_dismissals GDI-067)';
+    RAISE NOTICE '  Todos los indices creados (incluye Grupo J: 5 indices + case_user_views GDI-067)';
     RAISE NOTICE '  Trigger de sync con user_registry activado';
     RAISE NOTICE '';
     RAISE NOTICE 'SCHEMA 100_test_audit:';

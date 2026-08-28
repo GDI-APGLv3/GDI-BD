@@ -1,7 +1,13 @@
-"""Verificar deploy de Postgres en Fly.io"""
+import os
+import sys
+
 import psycopg2
 
-DB_URL = "postgresql://postgres:S_OOdCXHbqSxm7L4J-SVeY-SvUlREci3@localhost:5433/railway"
+DB_URL = os.environ.get("DATABASE_URL")
+if not DB_URL:
+    print("[ERROR] Variable de entorno DATABASE_URL no configurada")
+    print("Ejemplo: export DATABASE_URL='postgresql://user:pass@host:port/db'")
+    sys.exit(1)
 
 conn = psycopg2.connect(DB_URL)
 cur = conn.cursor()

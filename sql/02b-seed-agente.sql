@@ -1,34 +1,5 @@
--- ============================================================================
--- 02b-seed-agente.sql
--- Tablas de GDI-AgenteLANG en schema public
--- ============================================================================
---
--- Crea las 7 tablas que GDI-AgenteLANG genera en su startup (lifespan).
--- Ejecutar DESPUES de 01-install.sql y ANTES o DESPUES de 02-seed-global.sql.
---
--- Todas usan CREATE TABLE IF NOT EXISTS (idempotente, safe to re-run).
---
--- Tablas:
---   1. chat_messages         - Historial de conversaciones del chat IA
---   2. ai_usage_log          - Log de llamadas AI con tokens y costo
---   3. ai_usage_limits       - Limites diarios de gasto por schema
---   4. checkpoint_migrations - Control de version del checkpointer LangGraph
---   5. checkpoints           - Estado de conversaciones LangGraph
---   6. checkpoint_blobs      - Datos binarios de canales del grafo
---   7. checkpoint_writes     - Writes pendientes entre nodos del grafo
---
--- Fuentes:
---   - GDI-AgenteLANG/app/db/messages.py (chat_messages)
---   - GDI-AgenteLANG/app/services/usage_tracker.py (ai_usage_log, ai_usage_limits)
---   - langgraph-checkpoint-postgres (checkpoint_*)
--- ============================================================================
 
 
--- ============================================================================
--- TABLA 1: chat_messages
--- Historial queryable de mensajes del chat IA (user + assistant)
--- Fuente: app/db/messages.py :: setup_chat_messages_table()
--- ============================================================================
 
 CREATE TABLE IF NOT EXISTS public.chat_messages (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -55,12 +26,6 @@ CREATE INDEX IF NOT EXISTS idx_chat_messages_schema
 CREATE INDEX IF NOT EXISTS idx_chat_messages_case
     ON public.chat_messages(case_id) WHERE case_id IS NOT NULL;
 
-
--- ============================================================================
--- TABLA 2: ai_usage_log
--- Log de cada llamada AI con tokens consumidos y costo estimado
--- Fuente: app/services/usage_tracker.py :: setup_ai_usage_tables()
--- ============================================================================
 
 CREATE TABLE IF NOT EXISTS public.ai_usage_log (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -97,12 +62,6 @@ CREATE INDEX IF NOT EXISTS idx_ai_usage_log_schema_status_created
     ON public.ai_usage_log(schema_name, status, created_at);
 
 
--- ============================================================================
--- TABLA 3: ai_usage_limits
--- Limites diarios de gasto AI por schema (con acumulador fast-path)
--- Fuente: app/services/usage_tracker.py :: setup_ai_usage_tables()
--- ============================================================================
-
 CREATE TABLE IF NOT EXISTS public.ai_usage_limits (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     schema_name VARCHAR(100) UNIQUE NOT NULL,
@@ -115,10 +74,6 @@ CREATE TABLE IF NOT EXISTS public.ai_usage_limits (
 );
 
 
--- ============================================================================
--- TRIGGERS: updated_at (ai_usage_log, ai_usage_limits)
--- ============================================================================
-
 DROP TRIGGER IF EXISTS trg_ai_usage_log_updated_at ON public.ai_usage_log;
 CREATE TRIGGER trg_ai_usage_log_updated_at BEFORE UPDATE ON public.ai_usage_log
     FOR EACH ROW EXECUTE FUNCTION public.fn_set_updated_at();
@@ -127,27 +82,15 @@ DROP TRIGGER IF EXISTS trg_ai_usage_limits_updated_at ON public.ai_usage_limits;
 CREATE TRIGGER trg_ai_usage_limits_updated_at BEFORE UPDATE ON public.ai_usage_limits
     FOR EACH ROW EXECUTE FUNCTION public.fn_set_updated_at();
 
--- ============================================================================
--- TABLA 4: checkpoint_migrations
--- Control de version del checkpointer LangGraph (v0..v9)
--- Fuente: langgraph-checkpoint-postgres :: AsyncPostgresSaver.setup()
--- ============================================================================
 
 CREATE TABLE IF NOT EXISTS public.checkpoint_migrations (
     v INTEGER PRIMARY KEY
 );
 
--- Seed de versiones (0-9) que LangGraph espera encontrar
 INSERT INTO public.checkpoint_migrations (v)
 VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9)
 ON CONFLICT (v) DO NOTHING;
 
-
--- ============================================================================
--- TABLA 5: checkpoints
--- Estado serializado de cada conversacion LangGraph
--- Fuente: langgraph-checkpoint-postgres :: AsyncPostgresSaver.setup()
--- ============================================================================
 
 CREATE TABLE IF NOT EXISTS public.checkpoints (
     thread_id TEXT NOT NULL,
@@ -164,12 +107,6 @@ CREATE INDEX IF NOT EXISTS checkpoints_thread_id_idx
     ON public.checkpoints(thread_id);
 
 
--- ============================================================================
--- TABLA 6: checkpoint_blobs
--- Datos binarios de canales del grafo (estados serializados)
--- Fuente: langgraph-checkpoint-postgres :: AsyncPostgresSaver.setup()
--- ============================================================================
-
 CREATE TABLE IF NOT EXISTS public.checkpoint_blobs (
     thread_id TEXT NOT NULL,
     checkpoint_ns TEXT NOT NULL DEFAULT '',
@@ -183,12 +120,6 @@ CREATE TABLE IF NOT EXISTS public.checkpoint_blobs (
 CREATE INDEX IF NOT EXISTS checkpoint_blobs_thread_id_idx
     ON public.checkpoint_blobs(thread_id);
 
-
--- ============================================================================
--- TABLA 7: checkpoint_writes
--- Writes pendientes entre nodos del grafo LangGraph
--- Fuente: langgraph-checkpoint-postgres :: AsyncPostgresSaver.setup()
--- ============================================================================
 
 CREATE TABLE IF NOT EXISTS public.checkpoint_writes (
     thread_id TEXT NOT NULL,
@@ -207,36 +138,25 @@ CREATE INDEX IF NOT EXISTS checkpoint_writes_thread_id_idx
     ON public.checkpoint_writes(thread_id);
 
 
--- ============================================================================
--- rag_query_log (mig 043) - auditoría de queries semantic_search
--- Tabla cross-tenant en public para capturar tráfico real de semantic_search.
--- Habilita: métricas offline (eval set), análisis de queries vacías, latencia por tenant.
--- Fuente: GDI-AgenteLANG endpoint semantic_search
--- ============================================================================
-
 CREATE TABLE IF NOT EXISTS public.rag_query_log (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-  -- Contexto
   schema_name TEXT NOT NULL,
   user_id UUID,
-  source TEXT NOT NULL,                      -- 'api' | 'mcp' | 'eval'
-  intent TEXT,                                -- 'rag' | 'lookup' (Sprint 1)
+  source TEXT NOT NULL,
+  intent TEXT,
 
-  -- Query
   query TEXT NOT NULL,
   rewritten_query TEXT,
 
-  -- Resultados de retrieval
-  candidates_returned INT,                    -- cuántos pasaron permisos
-  final_returned INT,                         -- cuántos devolvió
+  candidates_returned INT,
+  final_returned INT,
   top_similarity NUMERIC(5,4),
   bottom_similarity NUMERIC(5,4),
   threshold_applied NUMERIC(3,2),
   results_doc_ids UUID[],
 
-  -- Performance
   latency_ms INT
 );
 
@@ -251,9 +171,6 @@ CREATE INDEX IF NOT EXISTS idx_rag_query_log_empty
   WHERE final_returned = 0;
 
 
--- ============================================================================
--- FIN
--- ============================================================================
 DO $$
 BEGIN
     RAISE NOTICE '';

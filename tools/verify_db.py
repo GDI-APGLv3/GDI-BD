@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Verificar que la BD se creo correctamente
-"""
 
 import psycopg2
 import sys
@@ -12,7 +9,6 @@ os.environ['PYTHONIOENCODING'] = 'utf-8'
 if sys.stdout.encoding != 'utf-8':
     sys.stdout.reconfigure(encoding='utf-8')
 
-# Configuración de conexión via variable de entorno
 DATABASE_URL = os.environ.get("DATABASE_URL")
 if not DATABASE_URL:
     print("[ERROR] Variable de entorno DATABASE_URL no configurada")
@@ -28,7 +24,6 @@ def verify():
         print("VERIFICACION DE SCHEMAS Y TABLAS")
         print("="*80 + "\n")
 
-        # 1. Verificar schema public
         cur.execute("""
             SELECT COUNT(*) FROM information_schema.tables
             WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
@@ -45,7 +40,6 @@ def verify():
         for row in cur.fetchall():
             print(f"    - {row[0]}")
 
-        # 2. Verificar schema 100_test
         cur.execute("""
             SELECT COUNT(*) FROM information_schema.tables
             WHERE table_schema = '100_test' AND table_type = 'BASE TABLE'
@@ -62,7 +56,6 @@ def verify():
         for row in cur.fetchall():
             print(f"    - {row[0]}")
 
-        # 3. Verificar schema 100_test_audit
         cur.execute("""
             SELECT COUNT(*) FROM information_schema.tables
             WHERE table_schema = '100_test_audit' AND table_type = 'BASE TABLE'
@@ -79,7 +72,6 @@ def verify():
         for row in cur.fetchall():
             print(f"    - {row[0]}")
 
-        # 4. Datos en public
         print(f"\n[Datos en SCHEMA PUBLIC]")
 
         cur.execute("SELECT COUNT(*) FROM public.roles")
@@ -106,7 +98,6 @@ def verify():
         display_states_count = cur.fetchone()[0]
         print(f"  Document Display States: {display_states_count}")
 
-        # 5. Datos en 100_test
         print(f"\n[Datos en SCHEMA 100_test]")
 
         cur.execute("SELECT COUNT(*) FROM \"100_test\".settings")
@@ -129,7 +120,6 @@ def verify():
         case_templates_tenant_count = cur.fetchone()[0]
         print(f"  Case Templates: {case_templates_tenant_count}")
 
-        # 6. Verificar audit
         print(f"\n[Datos en SCHEMA 100_test_audit]")
 
         cur.execute("SELECT COUNT(*) FROM \"100_test_audit\".audit_log")

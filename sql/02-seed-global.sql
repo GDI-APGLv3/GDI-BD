@@ -1,23 +1,4 @@
--- ============================================================================
--- GDI LATAM - SEED DATA GLOBAL (Multi-Tenant)
--- ============================================================================
--- Descripcion: Datos iniciales para tablas globales
--- Version: 4.0.0 (Multi-Tenant)
--- PostgreSQL: 17.0+
---
--- CONTENIDO:
---   - 4 Roles
---   - 65 Global Document Types (61 publicos + 2 internos: PV, CAEX + MEMO + NOTA + IFRLM)
---   - 30 Global Case Templates
---   - Document Display States (6)
---   - 3 Global Registry Families (ARQ, LUM, ORD)
---
--- NOTA: ranks y seals son per-tenant (ver 03-create-municipio.sql)
--- ============================================================================
 
--- ============================================================================
--- ROLES (4)
--- ============================================================================
 
 INSERT INTO "public"."roles" ("role_id", "role_name", "description") VALUES
 ('a0000000-0000-0000-0000-000000000001'::uuid, 'Usuario General', 'Usuario basico del sistema'),
@@ -25,9 +6,6 @@ INSERT INTO "public"."roles" ("role_id", "role_name", "description") VALUES
 ('a0000000-0000-0000-0000-000000000003'::uuid, 'Administrador', 'Administrador con todos los permisos'),
 ('a0000000-0000-0000-0000-000000000004'::uuid, 'Sistema TEST', 'Usuario del sistema para numeracion (no editable, no eliminable)');
 
--- ============================================================================
--- GLOBAL DOCUMENT TYPES (65)
--- ============================================================================
 
 INSERT INTO "public"."global_document_types"
 ("id", "name", "acronym", "description", "signature_policy", "is_visible", "is_active", "type", "trust") VALUES
@@ -94,24 +72,20 @@ INSERT INTO "public"."global_document_types"
 ('d0000000-0000-0000-0000-00000000003f'::uuid, 'Resolucion HCD', 'PLRES', 'Resolucion emitida por el Honorable Concejo Deliberante', 'electronic', true, true, 'Importado', true),
 ('d0000000-0000-0000-0000-000000000040'::uuid, 'Comunicacion HCD', 'PLCOM', 'Comunicacion oficial del Honorable Concejo Deliberante', 'electronic', true, true, 'Importado', true),
 ('d0000000-0000-0000-0000-000000000041'::uuid, 'Decreto HCD', 'PLDEC', 'Decreto del Honorable Concejo Deliberante (archivado/desarchivado de expedientes, licencias de concejales, decretos de comisiones internas).', 'electronic', true, true, 'Importado', true),
--- Tipos internos del sistema (no visibles, no activos)
+('d0000000-0000-0000-0000-000000000043'::uuid, 'Ley - Norma Varias', 'PLLEY', 'Ley o norma de otra jurisdiccion importada al digesto (leyes provinciales, normas varias)', 'electronic', true, true, 'Importado', true),
+('d0000000-0000-0000-0000-000000000044'::uuid, 'Tribunal de Cuentas Municipal', 'TCM', 'Acuerdos, reglamentos y actos del Tribunal de Cuentas Municipal importados al digesto', 'electronic', true, true, 'Importado', true),
+('d0000000-0000-0000-0000-000000000045'::uuid, 'Resolucion Importada', 'RSIMP', 'Resolucion importada al digesto (ej. resoluciones del DEM u otros organismos)', 'electronic', true, true, 'Importado', true),
+('d0000000-0000-0000-0000-000000000046'::uuid, 'Carta Organica Municipal', 'CARTA', 'Carta Organica del municipio importada al digesto', 'electronic', true, true, 'Importado', true),
 ('d0000000-0000-0000-0000-00000000003c'::uuid, 'Pase', 'PV', 'Pase de expediente (Uso exclusivo modulo EE)', 'electronic', false, false, 'HTML', true),
 ('d0000000-0000-0000-0000-00000000003d'::uuid, 'Caratula', 'CAEX', 'Caratula de expediente (Uso exclusivo modulo EE)', 'electronic', false, false, 'HTML', true),
--- Tipo interno del sistema: activo pero no visible (fallback numeracion / tests)
 ('d0000000-0000-0000-0000-000000000042'::uuid, 'Testing', 'TST', 'Documento generado automaticamente cuando una firma falla (Uso exclusivo del sistema)', 'electronic', false, true, 'HTML', true),
--- Memos (persona-a-persona)
 ('d0000000-0000-0000-0000-000000000070'::uuid, 'Memo', 'MEMO', 'Memorandum persona-a-persona con destinatarios TO/CC/BCC', 'electronic', true, true, 'MEMO', true),
--- Informes RLM (generados on-demand desde un legajo)
 ('d0000000-0000-0000-0000-000000000080'::uuid, 'Informe RLM', 'IFRLM', 'Informe de Registro Legajo Multiproposito (generado on-demand desde un legajo RLM)', 'electronic', true, true, 'HTML', true);
 
--- Tipos con numeracion especial por tipo+departamento
 UPDATE "public"."global_document_types"
 SET "special_numbering" = true
 WHERE "acronym" IN ('DECRE', 'RESOL', 'ORD', 'DISPO');
 
--- ============================================================================
--- GLOBAL CASE TEMPLATES (30)
--- ============================================================================
 
 INSERT INTO "public"."global_case_templates"
 ("id", "type_name", "acronym", "description", "is_active") VALUES
@@ -146,9 +120,6 @@ INSERT INTO "public"."global_case_templates"
 ('b0000000-0000-0000-0000-00000000001d'::uuid, 'Mesa de Entrada General', 'MEGEN', 'Recepcion, registro y derivacion de toda documentacion ingresada por mesa de entrada a las areas correspondientes', true),
 ('b0000000-0000-0000-0000-00000000001e'::uuid, 'Seguridad Ciudadana', 'SEGCI', 'Coordinacion de politicas de seguridad ciudadana, monitoreo de camaras, prevencion del delito y articulacion con fuerzas de seguridad', true);
 
--- ============================================================================
--- DOCUMENT DISPLAY STATES (6)
--- ============================================================================
 
 INSERT INTO "public"."document_display_states"
 ("id", "display_state_code", "display_state_name", "description") VALUES
@@ -159,12 +130,8 @@ INSERT INTO "public"."document_display_states"
 (5, 'CANCELLED', 'Cancelado', 'Documento cancelado'),
 (6, 'NUMBERED', 'Numerado', 'Documento oficial numerado');
 
--- Reset sequence
 SELECT setval('document_display_states_id_seq', 6);
 
--- ============================================================================
--- GLOBAL REGISTRY FAMILIES (8)
--- ============================================================================
 
 INSERT INTO "public"."global_registry_families"
   ("id", "code", "name", "description", "default_data_schema", "default_states")
@@ -234,9 +201,6 @@ VALUES
   '["Operativo","En Reparacion","Baja"]'::jsonb
 );
 
--- ============================================================================
--- FIN SEED DATA GLOBAL
--- ============================================================================
 
 DO $$
 BEGIN

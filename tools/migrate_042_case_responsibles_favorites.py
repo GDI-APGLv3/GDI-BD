@@ -1,8 +1,3 @@
-"""
-Migración 042: Crear case_responsibles y case_favorites en todas las BDs PRD.
-Ejecutar con DATABASE_URL o pasar credenciales como args.
-Uso: python migrate_042_case_responsibles_favorites.py <host> <port> <password> [dry_run]
-"""
 import sys
 import psycopg2
 
@@ -95,7 +90,6 @@ def run_migration(host, port, password, dry_run=False):
     try:
         conn = psycopg2.connect(conn_str)
     except Exception as e:
-        # Intentar sin SSL si falla
         conn_str_nossl = conn_str.replace("sslmode=require", "sslmode=prefer")
         conn = psycopg2.connect(conn_str_nossl)
 
@@ -113,7 +107,6 @@ def run_migration(host, port, password, dry_run=False):
             continue
         try:
             cur.execute(ddl)
-            # Capturar notices
             for notice in conn.notices:
                 print(f"  {notice.strip()}")
             conn.notices.clear()

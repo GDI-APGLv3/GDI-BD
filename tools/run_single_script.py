@@ -1,15 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Ejecutar un script SQL individual
-"""
 
 import psycopg2
 import sys
 import os
 from pathlib import Path
 
-# Cargar .env si existe
 env_path = Path(__file__).parent.parent / ".env"
 if env_path.exists():
     with open(env_path) as f:
@@ -19,14 +15,12 @@ if env_path.exists():
                 key, value = line.split('=', 1)
                 os.environ.setdefault(key.strip(), value.strip())
 
-# Configuración de conexión via variable de entorno
 DATABASE_URL = os.environ.get("DATABASE_URL")
 if not DATABASE_URL:
     print("[ERROR] Variable de entorno DATABASE_URL no configurada")
     print("Ejemplo: export DATABASE_URL='postgresql://user:pass@host:port/db'")
     sys.exit(1)
 
-# Directorio de archivos SQL
 SQL_DIR = Path(__file__).parent.parent / "sql"
 
 def run_script(script_file):

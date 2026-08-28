@@ -1,0 +1,10 @@
+# Imagen mínima para correr las migraciones pendientes (runner) en on-premise.
+# NO copia las migraciones: el docker-compose las MONTA como volumen (junto con el
+# runner), así un `git pull` de GDI-BD actualiza las migraciones sin rebuildear.
+FROM python:3.12-slim
+RUN pip install --no-cache-dir "psycopg2-binary>=2.9"
+WORKDIR /app
+# El compose monta:
+#   ./GDI-BD/tools/run_migrations.py -> /app/run_migrations.py
+#   ./GDI-BD/sql/migrations          -> /migrations  (MIGRATIONS_DIR)
+CMD ["python", "/app/run_migrations.py"]
